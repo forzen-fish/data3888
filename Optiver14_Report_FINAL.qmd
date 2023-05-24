@@ -1,0 +1,2722 @@
+---
+title: "Optiver14_Report"
+format: html
+---
+# Obtaining Data
+## Importing & Sampling Files
+
+```{r, cache=TRUE}
+set.seed(3888)
+library(readxl)
+library(dplyr)
+
+setwd("/Users/natan/Desktop/usyd/2023/sem_1/data3888/individual_book_train")
+
+csv_files <- list.files(pattern = "\\.csv$")
+
+sample_time_ids <- function(file, sample_size) {
+  df <- read.csv(file)
+  unique_time_ids <- unique(df$time_id)
+  
+  if(sample_size > length(unique_time_ids)){
+    sampled_time_ids <- unique_time_ids
+  } else {
+    sampled_time_ids <- sample(unique_time_ids, sample_size)
+  }
+  
+  sampled_df <- df[df$time_id %in% sampled_time_ids, ]
+  return(sampled_df)
+}
+
+sample_size <- 100 # The number of time_ids you want to sample from each file
+list_of_sampled_dataframes <- lapply(csv_files, sample_time_ids, sample_size = sample_size)
+combined_dataframe <- do.call(rbind, list_of_sampled_dataframes)
+```
+
+
+```{r, cache=TRUE}
+library(dplyr)
+library(stringr)
+delimeter = '-'
+data <- combined_dataframe %>%
+  mutate(time_id = paste0(stock_id,delimeter, time_id))
+
+```
+
+
+### Calculate Statistics
+```{r, cache=TRUE}
+w = 0.8 #needs to be optimised
+data <- data %>% mutate(
+  WAP = (bid_price1 * ask_size1 + ask_price1 * bid_size1) / (bid_size1 + ask_size1),
+  WAP2 = (bid_price2 * ask_size2 + ask_price2 * bid_size2) / (bid_size2 + ask_size2),
+  AvgWAP = (bid_price1 * ask_size1 + ask_price1 * bid_size1 + w*(bid_price2 * ask_size2 + ask_price2 * bid_size2 )) /(bid_size1 + ask_size1 + w*( ask_size2 + bid_size2 )),
+  BidAskSpread1 = ask_price1 / bid_price1 - 1,
+                                BidAskSpread2 = ask_price2 / bid_price2 - 1,
+                        AvgBidAskSpread = (BidAskSpread1 + BidAskSpread2) / 2)
+```
+
+
+
+## Sample Random File Lengths
+```{r, cache=TRUE}
+set.seed(3888)
+library(dplyr)
+library(ggplot2)
+
+sample_interval_int <- function(min_length = 60, min_value = 0, max_value = 570) { #min length of 60
+
+  # Check if the min_length is possible within the specified range
+  if (max_value - min_value < min_length) {
+    stop("The specified minimum length is not possible within the given range.")
+  }
+  
+  # Sample the start value
+  # start_value <- sample(min_value:(max_value - min_length), 1)
+  start_value <- 0
+  
+  interval_length <- sample(min_length:max_value, 1)
+
+  
+  # Sample the end value
+  end_value <- start_value +interval_length
+  
+  # Return the interval as a vector
+  return(c(start_value, end_value))
+}
+
+comp_vol <- function(x) {
+  return(sqrt(sum(x ^ 2)))
+}
+
+
+vol_list = list()
+# Load your data
+# data <- read.csv("your_data_file.csv")
+
+# Function to split the data
+
+  # Select unique time_ids and shuffle them
+  unique_time_ids <- unique(data$time_id)
+  shuffled_time_ids <- sample(unique_time_ids)
+  
+  # Determine the number of training and test time_ids
+  n_train <- length(shuffled_time_ids)
+  
+  list_df = list()
+  
+  
+  length_test = length(shuffled_time_ids)
+  for (i in 1:length_test) {
+    print(i) 
+
+    id = shuffled_time_ids[i]
+    test_subset <- data %>% filter(time_id == id)
+    
+    
+    test_interval <- sample_interval_int()
+    start_second <- test_interval[1]
+    test_length <- test_interval[2] - test_interval[1]
+    end_second <- start_second + test_length
+    X <- test_subset %>% filter(seconds_in_bucket >= start_second & seconds_in_bucket <= end_second)
+    Y <- test_subset %>% filter(seconds_in_bucket > end_second & seconds_in_bucket <= (end_second +30))
+    
+    # If we get sample with 0 rows of X, we keep on resampling until we get one that has at least 1 row
+     while (nrow(X) == 0 || nrow(Y)==0){
+      test_interval <- sample_interval_int()
+    start_second <- test_interval[1]
+    test_length <- test_interval[2] - test_interval[1]
+    end_second <- start_second + test_length
+    X <- test_subset %>% filter(seconds_in_bucket >= start_second & seconds_in_bucket <= end_second)
+    Y <- test_subset %>% filter(seconds_in_bucket > end_second & seconds_in_bucket <= (end_second +30)) 
+    }
+  
+  
+    test_length= test_length+1  
+    percent_missing <- 1- (nrow(X)/test_length)
+    X <- cbind(X,test_length,percent_missing )
+    # test_data_selected_Y[[i]] <- Y
+    
+    if(nrow(Y)==0){print("ERRORRR")}
+    if(nrow(X)==0){print("ERRORRR")}
+    
+
+    sec <- Y %>% pull(seconds_in_bucket)
+    price <- Y %>% pull(WAP)
+    log_r <- log(price[-1] / price[1:(length(price) - 1)])
+    log_r1 <- data.frame(time = sec[-1], log_return = log_r)
+    time.no.change <- ((end_second+1):(end_second +30))[!((end_second+1):(end_second +30) %in% log_r1$time)]
+    
+    if (length(time.no.change) > 0) {
+    new.df <- data.frame(time = time.no.change, log_return = 0)
+    log_r1 <- rbind(log_r1, new.df)
+    log_r1 <- log_r1[order(log_r1$time), ]
+    
+    }
+    log_r1 <- log_r1 %>%
+  mutate(vol = comp_vol(log_return))
+
+  vol <- log_r1$vol[1]
+  
+  
+  
+  
+  sec <- X %>% pull(seconds_in_bucket)
+    price <- X %>% pull(WAP)
+    log_r <- log(price[-1] / price[1:(length(price) - 1)])
+    log_r1 <- data.frame(time = sec[-1], log_return = log_r)
+    time.no.change <- ((1):(end_second))[!((1):(end_second) %in% log_r1$time)] ## TIME NO CHANGE IS NOT RIGHT!
+    
+    if (length(time.no.change) > 0) {
+    new.df <- data.frame(time = time.no.change, log_return = 0)
+    log_r1 <- rbind(log_r1, new.df)
+    log_r1 <- log_r1[order(log_r1$time), ]
+    
+    }
+    
+      log_r1 <- log_r1 |> mutate(index = row_number())
+    log_r1 <- log_r1 %>% mutate(time_bucket = ceiling(index / 30))
+   log_r1 <- log_r1 %>%
+  group_by(time_bucket) %>%
+  mutate(realised_vol = comp_vol(log_return))
+   
+   realised_volatility <- aggregate(realised_vol ~ time_bucket, log_r1, mean)
+
+X <- X %>% mutate(time_bucket = ceiling(seconds_in_bucket / 30))
+
+X <- merge(X,realised_volatility, by= 'time_bucket', all.x = TRUE )
+   
+   
+   mean_realised_vol <- mean(log_r1$realised_vol)
+   
+    
+    # train_data_selected <- rbind(train_data_selected, selected_subset)
+    list_df[[i]] = cbind(X,vol,mean_realised_vol)
+  }
+  
+  
+  
+  df_file_lengths <- data.frame(rep(NA, length(list_df)))
+  df_file_lengths$file <- rep(NA, length(list_df))
+  df_file_lengths$length <- rep(NA, length(list_df))
+  df_file_lengths$percent_missing <- rep(NA, length(list_df))
+  
+  for(i in 1:length(list_df)){
+    df_file_lengths$file[i] <- list_df[[i]]$time_id[1]
+     df_file_lengths$length[i] <- list_df[[i]]$test_length[1]
+     df_file_lengths$percent_missing[i] <- list_df[[i]]$percent_missing[1]
+     
+     if (list_df[[i]]$percent_missing[1] <0 ){print(i)}
+    
+  }
+```
+
+
+### Visualise distribution of file lengths across sampled dataframes.
+```{r}
+ggplot(df_file_lengths) + geom_histogram(aes(x = length), bins = 20) + theme_minimal()
+```
+We can see that our file lengths look to be largely uniformly distributed, which is good thing since we want validate and test on all varieties of file lengths.
+
+## Clustering
+
+```{r, cache=TRUE}
+set.seed(3888)
+# Load required packages
+library(dplyr)
+library(feasts)
+library(cluster)
+library(tsibble)
+library(tsfeatures)
+library(ggplot2)
+
+# Extract features from each dataframe
+feature_list <- lapply(list_df, function(df) {
+    
+  tsfeatures(df$realised_vol, c("stability", "entropy")) %>%
+    mutate(test_length = mean(df$test_length),
+           percent_missing = mean(df$percent_missing),
+                                  liquidity =mean(df$BidAskSpread1))
+})
+
+
+
+# Combine features into a single dataframe
+feature_matrix <- do.call(rbind, feature_list)
+feature_matrix_filtered <- feature_matrix |> select(c(stability,entropy,test_length,percent_missing))
+
+feature_matrix_filtered[is.na(feature_matrix_filtered)] <- 1
+
+# feature_matrix_filtered <- feature_matrix_filtered |> na.omit()
+# Apply clustering algorithm (k-means in this example)
+k <- 3 # Choose the number of clusters
+kmeans_result <- kmeans(feature_matrix_filtered, centers = k)
+save(feature_matrix_filtered, file = "feature_matrix_filtered.RData")
+saveRDS(kmeans_result, "kmeans_result.rds")
+
+# Check the cluster assignments
+cluster_assignments <- kmeans_result$cluster
+
+
+# Determine the range of k values to test
+k_range <- 1:5
+
+# Calculate WSS for each k value
+wss_values <- sapply(k_range, function(k) {
+  kmeans_result <- kmeans(feature_matrix_filtered, centers = k, nstart = 25)
+  kmeans_result$tot.withinss
+})
+
+# Create an elbow plot of WSS values
+elbow_plot <- qplot(k_range, wss_values, geom = "line", xlab = "Number of clusters (k)", ylab = "Within-cluster sum of squares (WSS)") + theme_bw()
+
+# Display the elbow plot
+print(elbow_plot)
+
+
+cluster_1_list <- list()
+cluster_2_list <- list()
+cluster_3_list <- list()
+
+
+length(cluster_assignments)
+
+for (i in seq_along(list_df)) {
+  df <- list_df[[i]]
+  cluster_assignment <- cluster_assignments[i]
+  
+  if (cluster_assignment == 1) {
+    cluster_1_list <- c(cluster_1_list, list(df))
+  } else if (cluster_assignment == 2) {
+    cluster_2_list <- c(cluster_2_list, list(df))
+  } else if (cluster_assignment == 3) {
+    cluster_3_list <- c(cluster_3_list, list(df))
+  }
+}
+
+
+
+
+set.seed(3888)
+# CLUSTER 1 =======
+  train_frac = 0.8
+# Select unique time_ids and shuffle them
+indeces = 1:length(cluster_1_list)
+shuffled_indeces <- sample(indeces)
+
+# Determine the number of training and test indeces
+n_train <- round(length(indeces) * train_frac)
+n_test <- length(indeces) - n_train
+
+# Split the shuffled time_ids into training and test sets
+train_indeces <- shuffled_indeces[1:n_train]
+test_indeces <- shuffled_indeces[(n_train+1):(n_train + n_test)]
+
+# Filter data for training and test sets
+cluster_1_train <- cluster_1_list[train_indeces]
+cluster_1_test <- cluster_1_list[test_indeces]
+
+# CLUSTER 2 =======
+indeces = 1:length(cluster_2_list)
+shuffled_indeces <- sample(indeces)
+
+# Determine the number of training and test indeces
+n_train <- round(length(indeces) * train_frac)
+n_test <- length(indeces) - n_train
+
+# Split the shuffled time_ids into training and test sets
+train_indeces <- shuffled_indeces[1:n_train]
+test_indeces <- shuffled_indeces[(n_train+1):(n_train + n_test)]
+
+# Filter data for training and test sets
+cluster_2_train <- cluster_2_list[train_indeces]
+cluster_2_test <- cluster_2_list[test_indeces]
+
+# CLUSTER 3 =======
+indeces = 1:length(cluster_3_list)
+shuffled_indeces <- sample(indeces)
+
+# Determine the number of training and test indeces
+n_train <- round(length(indeces) * train_frac)
+n_test <- length(indeces) - n_train
+
+# Split the shuffled time_ids into training and test sets
+train_indeces <- shuffled_indeces[1:n_train]
+test_indeces <- shuffled_indeces[(n_train+1):(n_train + n_test)]
+
+# Filter data for training and test sets
+cluster_3_train <- cluster_3_list[train_indeces]
+cluster_3_test <- cluster_3_list[test_indeces]
+
+```
+
+
+# Models on Validation Set
+## MSE Function
+```{r}
+calculate_mse <- function(vol.actual.1,pred.lm.1){
+MSE.lm <- vector()
+for (i in 1 : length(vol.actual.1)) {
+  MSE.lm <- c(MSE.lm, mean((vol.actual.1[[i]] - pred.lm.1[[i]]) ^ 2))
+}
+return(MSE.lm)
+}
+```
+
+## Dataframe to store Results
+```{r}
+prediction_results_cluster1 <- data.frame(rep(NA, length(cluster_1_train)))
+prediction_results_cluster2 <- data.frame(rep(NA, length(cluster_2_train)))
+prediction_results_cluster3 <- data.frame(rep(NA, length(cluster_3_train)))
+
+
+evaluation_cluster1 <- data.frame(rep(NA, length(cluster_1_train)))
+evaluation_cluster2 <- data.frame(rep(NA, length(cluster_2_train)))
+evaluation_cluster3 <- data.frame(rep(NA, length(cluster_3_train)))
+```
+
+## Calculate actual volatilites for evaluation
+```{r}
+vol.1.actual <- list()
+
+for(i in 1:length(cluster_1_train)){
+  vol.1.actual[[i]] <- mean(cluster_1_train[[i]]$vol)
+}
+
+
+vol.2.actual <- list()
+
+for(i in 1:length(cluster_2_train)){
+  vol.2.actual[[i]] <- mean(cluster_2_train[[i]]$vol)
+}
+
+
+vol.3.actual <- list()
+
+for(i in 1:length(cluster_3_train)){
+  vol.3.actual[[i]] <- mean(cluster_3_train[[i]]$vol)
+}
+
+```
+
+
+## Linear Regression
+
+```{r, warning=FALSE}
+vol = list()
+list.reg <- list() 
+log_r1 <- list()
+lm.models.full <- list()
+list.reg.val <- list()
+pred.lm <- list()
+lm.models.upper <- list()
+lm.models.og <- list()
+lm.models.null<- list()
+lm.models.forward <- list()
+pred.lm.og <- list()
+pred.lm.forward <- list()
+
+run_regression_aic <- function(cluster_1_train) {
+for (i in 1:length(cluster_1_train)){
+  sec <- cluster_1_train[[i]] %>% pull(seconds_in_bucket) - cluster_1_train[[i]]$seconds_in_bucket[1] + 1 # this resets second to 1
+  cluster_1_train[[i]]$time <- sec
+  price <- cluster_1_train[[i]]  %>% pull(WAP)
+  log_r <- log(price[-1] / price[1:(length(price) - 1)])
+  log_r1<- data.frame(time = sec[-1],  log_return = log_r)
+  start_time  = cluster_1_train[[i]]$time[1]
+  end_time = tail(cluster_1_train[[i]]$time, 1)
+  time.no.change <- (start_time:end_time)[!(start_time:end_time %in% log_r1$time)]
+  if (length(time.no.change) > 0) {
+    new.df <- data.frame(time = time.no.change, log_return = 0)
+    log_r1 <- rbind(log_r1, new.df)
+    log_r1 <- log_r1[order(log_r1$time), ]}
+  log_r1 <- log_r1 %>% mutate(time_bucket = ceiling(time / 30))
+  stock100 <- cluster_1_train[[i]] %>% mutate(time_bucket = ceiling(time / 30),
+                            num_order = bid_size1 + ask_size1 + bid_size2 + ask_size2)
+  
+  
+  filtered_time_buckets <- stock100 |> pull(time_bucket)
+  filtered_time_buckets <- unique(filtered_time_buckets)
+  log_r1 <- log_r1 |> filter(time_bucket %in% filtered_time_buckets)
+  vol[[i]] <- aggregate(log_return ~ time_bucket, data = log_r1, FUN = comp_vol)
+  colnames(vol[[i]]) <- c('time_bucket', 'volatility')
+  
+  len.train <- length(unique(stock100$time_bucket))
+
+length_cluster <- nrow(stock100)
+stats.bucket <- stock100 %>% 
+    select(c(BidAskSpread1,BidAskSpread2, time_bucket,bid_price1,bid_price2,ask_price1,ask_price2,bid_size2,bid_size1,ask_size1,ask_size2,WAP,WAP2, num_order))
+
+if(len.train != length(vol[[i]]$volatility)){print("ERROR")}
+
+  # for each 30-sec time bucket, we compute the following statistics
+  # mean.WAP <- aggregate(WAP ~ time_bucket, data = stats.bucket, FUN = "mean")
+  #  mean.WAP2 <- aggregate(WAP2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+  #   mean.BidAskSpread1 <- aggregate(BidAskSpread1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+  #    mean.BidAskSpread2 <- aggregate(BidAskSpread2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_price1 <- aggregate(bid_price1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_price2 <- aggregate(bid_price2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_price1 <- aggregate(ask_price1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_price2 <- aggregate(ask_price2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_size2 <- aggregate(bid_size2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_size1 <- aggregate(bid_size1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_size1 <- aggregate(ask_size1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_size2 <- aggregate(ask_size2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_size2 <- aggregate(ask_size2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+  #    mean.price <- aggregate(WAP ~ time_bucket, data = stats.bucket, FUN = "mean")
+  # mean.order <- aggregate(num_order ~ time_bucket, data = stats.bucket, FUN = "mean")
+  # mean.BAS <- aggregate(BidAskSpread1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+  
+  
+   if(nrow(mean.ask_size2) <= 2){
+     pred.lm.forward[[i]] = vol[[i]]$volatility[nrow(vol[[i]])]
+  next}
+    
+  list.reg[[i]] <- data.frame(volatility = vol[[i]]$volatility[-1], 
+                              # WAP = mean.WAP$WAP[1:(len.train - 1)],
+                              # WAP2 = mean.WAP2$WAP2[1:(len.train - 1)],
+                              # BidAskSpread1 = mean.BidAskSpread1$BidAskSpread1[1:(len.train - 1)],
+                              #  BidAskSpread2 = mean.BidAskSpread2$BidAskSpread2[1:(len.train - 1)],
+                               bid_price1 = mean.bid_price1$bid_price1[1:(len.train - 1)],
+                               bid_price2 = mean.bid_price2$bid_price2[1:(len.train - 1)],
+                               ask_price1 = mean.ask_price1$ask_price1[1:(len.train - 1)],
+                              
+                               ask_price2 = mean.ask_price2$ask_price2[1:(len.train - 1)],
+                               bid_size2 = mean.bid_size2$bid_size2[1:(len.train - 1)],
+                               bid_size1 = mean.bid_size1$bid_size1[1:(len.train - 1)],
+                               ask_size1 = mean.ask_size1$ask_size1[1:(len.train - 1)],
+                              ask_size2 = mean.ask_size2$ask_size2[1:(len.train - 1)],
+                              # price = mean.price$WAP[1:(len.train - 1)],
+                              # order = mean.order$num_order[1:(len.train - 1)],
+                              # BidAskSpread = mean.BAS$BidAskSpread[1:(len.train - 1)],
+                              realised_volatility = vol[[i]]$volatility[1:(len.train - 1)]
+                              )
+
+
+  lm.models.null[[i]] <- lm(volatility ~ 1, list.reg[[i]],
+                       weights = 0.8 ^ (((len.train - 2):0) / 2))
+  lm.models.full[[i]] <- lm(volatility ~ ., list.reg[[i]],
+                       weights = 0.8 ^ (((len.train - 2):0) / 2))
+  
+  lm.models.forward[[i]] <- step(lm.models.null[[i]], direction = "forward",trace = FALSE, scope = list(lower =lm.models.null[[i]], upper =  lm.models.full[[i]]) )
+  
+  list.reg.val[[i]] <- data.frame(
+                              # WAP = mean.WAP$WAP[len.train],
+                              # WAP2 = mean.WAP2$WAP2[len.train],
+                              # BidAskSpread1 = mean.BidAskSpread1$BidAskSpread1[len.train],
+                              #  BidAskSpread2 = mean.BidAskSpread2$BidAskSpread2[len.train],
+                               bid_price1 = mean.bid_price1$bid_price1[len.train],
+                               bid_price2 = mean.bid_price2$bid_price2[len.train],
+                               ask_price1 = mean.ask_price1$ask_price1[len.train],
+                              
+                               ask_price2 = mean.ask_price2$ask_price2[len.train],
+                               bid_size2 = mean.bid_size2$bid_size2[len.train],
+                               bid_size1 = mean.bid_size1$bid_size1[len.train],
+                               ask_size1 = mean.ask_size1$ask_size1[len.train],
+                              ask_size2 = mean.ask_size2$ask_size2[len.train],
+                              # price = mean.price$WAP[len.train],
+                              # order = mean.order$num_order[len.train],
+                              # BidAskSpread = mean.BAS$BidAskSpread[len.train],
+                              realised_volatility = vol[[i]]$volatility[len.train])
+  
+  pred.lm.forward[[i]] <- predict(lm.models.forward[[i]], newdata = list.reg.val[[i]])
+  
+
+  
+  
+}
+  return(pred.lm.forward)
+}
+run_regression_og <- function(cluster_1_train) {
+for (i in 1:length(cluster_1_train)){
+  sec <- cluster_1_train[[i]] %>% pull(seconds_in_bucket) - cluster_1_train[[i]]$seconds_in_bucket[1] + 1 # this resets second to 1
+  cluster_1_train[[i]]$time <- sec
+  # index <- cluster_1_list[[i]] %>% pull(seconds_in_bucket) - sec[1] +1
+  price <- cluster_1_train[[i]]  %>% pull(WAP)
+  log_r <- log(price[-1] / price[1:(length(price) - 1)])
+  log_r1<- data.frame(time = sec[-1],  log_return = log_r)
+  start_time  = cluster_1_train[[i]]$time[1]
+  end_time = tail(cluster_1_train[[i]]$time, 1)
+  time.no.change <- (start_time:end_time)[!(start_time:end_time %in% log_r1$time)]
+  if (length(time.no.change) > 0) {
+    new.df <- data.frame(time = time.no.change, log_return = 0)
+    log_r1 <- rbind(log_r1, new.df)
+    log_r1 <- log_r1[order(log_r1$time), ]}
+  
+
+  log_r1 <- log_r1 %>% mutate(time_bucket = ceiling(time / 30))
+  
+  # cluster_1_list[[i]] <-cluster_1_list[[i]]|> mutate(index = 1:nrow(cluster_1_list[[i]]))
+  stock100 <- cluster_1_train[[i]] %>% mutate(time_bucket = ceiling(time / 30),
+                            num_order = bid_size1 + ask_size1 + bid_size2 + ask_size2)
+  
+  
+  filtered_time_buckets <- stock100 |> pull(time_bucket)
+  filtered_time_buckets <- unique(filtered_time_buckets)
+  log_r1 <- log_r1 |> filter(time_bucket %in% filtered_time_buckets)
+  vol[[i]] <- aggregate(log_return ~ time_bucket, data = log_r1, FUN = comp_vol)
+  colnames(vol[[i]]) <- c('time_bucket', 'volatility')
+  
+  len.train <- length(unique(stock100$time_bucket))
+
+length_cluster <- nrow(stock100)
+stats.bucket <- stock100 %>% 
+    select(c(BidAskSpread1,BidAskSpread2, time_bucket,bid_price1,bid_price2,ask_price1,ask_price2,bid_size2,bid_size1,ask_size1,ask_size2,WAP,WAP2, num_order))
+
+if(len.train != length(vol[[i]]$volatility)){print("ERROR")}
+
+  # for each 30-sec time bucket, we compute the following statistics
+  mean.WAP <- aggregate(WAP ~ time_bucket, data = stats.bucket, FUN = "mean")
+   mean.WAP2 <- aggregate(WAP2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+    mean.BidAskSpread1 <- aggregate(BidAskSpread1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.BidAskSpread2 <- aggregate(BidAskSpread2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_price1 <- aggregate(bid_price1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_price2 <- aggregate(bid_price2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_price1 <- aggregate(ask_price1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_price2 <- aggregate(ask_price2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_size2 <- aggregate(bid_size2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_size1 <- aggregate(bid_size1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_size1 <- aggregate(ask_size1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_size2 <- aggregate(ask_size2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_size2 <- aggregate(ask_size2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.price <- aggregate(WAP ~ time_bucket, data = stats.bucket, FUN = "mean")
+  mean.order <- aggregate(num_order ~ time_bucket, data = stats.bucket, FUN = "mean")
+  mean.BAS <- aggregate(BidAskSpread1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     if(nrow(mean.BAS) <= 2){
+     pred.lm.og[[i]] = vol[[i]]$volatility[nrow(vol[[i]])]
+  next}
+    
+  list.reg[[i]] <- data.frame(volatility = vol[[i]]$volatility[-1], 
+                              WAP = mean.WAP$WAP[1:(len.train - 1)],
+                              WAP2 = mean.WAP2$WAP2[1:(len.train - 1)],
+                              BidAskSpread1 = mean.BidAskSpread1$BidAskSpread1[1:(len.train - 1)],
+                               BidAskSpread2 = mean.BidAskSpread2$BidAskSpread2[1:(len.train - 1)],
+                               bid_price1 = mean.bid_price1$bid_price1[1:(len.train - 1)],
+                               bid_price2 = mean.bid_price2$bid_price2[1:(len.train - 1)],
+                               ask_price1 = mean.ask_price1$ask_price1[1:(len.train - 1)],
+                              
+                               ask_price2 = mean.ask_price2$ask_price2[1:(len.train - 1)],
+                               bid_size2 = mean.bid_size2$bid_size2[1:(len.train - 1)],
+                               bid_size1 = mean.bid_size1$bid_size1[1:(len.train - 1)],
+                               ask_size1 = mean.ask_size1$ask_size1[1:(len.train - 1)],
+                              ask_size2 = mean.ask_size2$ask_size2[1:(len.train - 1)],
+                              price = mean.price$WAP[1:(len.train - 1)],
+                              order = mean.order$num_order[1:(len.train - 1)],
+                              BidAskSpread = mean.BAS$BidAskSpread[1:(len.train - 1)],
+                              realised_volatility = vol[[i]]$volatility[1:(len.train - 1)]
+                              )
+  
+  
+  lm.models.og[[i]] <- lm(volatility ~ price + order + BidAskSpread, list.reg[[i]],
+                       weights = 0.8 ^ (((len.train - 2):0) / 2))
+  
+  list.reg.val[[i]] <- data.frame(
+                              WAP = mean.WAP$WAP[len.train],
+                              WAP2 = mean.WAP2$WAP2[len.train],
+                              BidAskSpread1 = mean.BidAskSpread1$BidAskSpread1[len.train],
+                               BidAskSpread2 = mean.BidAskSpread2$BidAskSpread2[len.train],
+                               bid_price1 = mean.bid_price1$bid_price1[len.train],
+                               bid_price2 = mean.bid_price2$bid_price2[len.train],
+                               ask_price1 = mean.ask_price1$ask_price1[len.train],
+                               ask_price2 = mean.ask_price2$ask_price2[len.train],
+                               bid_size2 = mean.bid_size2$bid_size2[len.train],
+                               bid_size1 = mean.bid_size1$bid_size1[len.train],
+                               ask_size1 = mean.ask_size1$ask_size1[len.train],
+                              ask_size2 = mean.ask_size2$ask_size2[len.train],
+                              price = mean.price$WAP[len.train],
+                              order = mean.order$num_order[len.train],
+                              BidAskSpread = mean.BAS$BidAskSpread[len.train],
+                              realised_volatility = vol[[i]]$volatility[len.train])
+  
+  pred.lm.og[[i]] <- predict(lm.models.og[[i]], newdata = list.reg.val[[i]])
+
+  
+  
+}
+  return(pred.lm.og)
+}
+
+prediction_results_cluster1$lm.og <- unlist(run_regression_og(cluster_1_train))
+prediction_results_cluster1$lm.aic <- unlist(run_regression_aic(cluster_1_train))
+prediction_results_cluster1$actual <- unlist(vol.1.actual)
+
+prediction_results_cluster2$lm.og <- unlist(run_regression_og(cluster_2_train))
+prediction_results_cluster2$lm.aic <- unlist(run_regression_aic(cluster_2_train))
+prediction_results_cluster2$actual <- unlist(vol.2.actual)
+
+
+prediction_results_cluster3$lm.og <- unlist(run_regression_og(cluster_3_train))
+prediction_results_cluster3$lm.aic <- unlist(run_regression_aic(cluster_3_train))
+prediction_results_cluster3$actual <- unlist(vol.3.actual)
+
+
+evaluation_cluster1$MSE.lm.og <- calculate_mse(vol.1.actual,prediction_results_cluster1$lm.og)
+evaluation_cluster2$MSE.lm.og <- calculate_mse(vol.2.actual,prediction_results_cluster2$lm.og)
+evaluation_cluster3$MSE.lm.og <- calculate_mse(vol.3.actual,prediction_results_cluster3$lm.og)
+
+
+evaluation_cluster1$MSE.lm.aic <- calculate_mse(vol.1.actual,prediction_results_cluster1$lm.aic)
+evaluation_cluster2$MSE.lm.aic <- calculate_mse(vol.2.actual,prediction_results_cluster2$lm.aic)
+evaluation_cluster3$MSE.lm.aic <- calculate_mse(vol.3.actual,prediction_results_cluster3$lm.aic)
+
+mean(evaluation_cluster1$MSE.lm.og )
+mean(evaluation_cluster1$MSE.lm.aic)
+mean(evaluation_cluster2$MSE.lm.og )
+mean(evaluation_cluster2$MSE.lm.aic)
+mean(evaluation_cluster3$MSE.lm.og )
+mean(evaluation_cluster3$MSE.lm.aic)
+```
+
+
+We can see that performing AIC does seem to have better results for all three clusters. Additionally, using our feature selection on the given variables on the dataset seem to be solving the negative prediction problem from the OG linear regression given from lectures.
+
+
+### Handling Negative Values
+
+```{r, warning=FALSE}
+run_regression_aic_0 <- function(cluster_1_train) {
+for (i in 1:length(cluster_1_train)){
+  sec <- cluster_1_train[[i]] %>% pull(seconds_in_bucket) - cluster_1_train[[i]]$seconds_in_bucket[1] + 1 # this resets second to 1
+  cluster_1_train[[i]]$time <- sec
+  price <- cluster_1_train[[i]]  %>% pull(WAP)
+  log_r <- log(price[-1] / price[1:(length(price) - 1)])
+  log_r1<- data.frame(time = sec[-1],  log_return = log_r)
+  start_time  = cluster_1_train[[i]]$time[1]
+  end_time = tail(cluster_1_train[[i]]$time, 1)
+  time.no.change <- (start_time:end_time)[!(start_time:end_time %in% log_r1$time)]
+  if (length(time.no.change) > 0) {
+    new.df <- data.frame(time = time.no.change, log_return = 0)
+    log_r1 <- rbind(log_r1, new.df)
+    log_r1 <- log_r1[order(log_r1$time), ]}
+  log_r1 <- log_r1 %>% mutate(time_bucket = ceiling(time / 30))
+  stock100 <- cluster_1_train[[i]] %>% mutate(time_bucket = ceiling(time / 30),
+                            num_order = bid_size1 + ask_size1 + bid_size2 + ask_size2)
+  
+  
+  filtered_time_buckets <- stock100 |> pull(time_bucket)
+  filtered_time_buckets <- unique(filtered_time_buckets)
+  log_r1 <- log_r1 |> filter(time_bucket %in% filtered_time_buckets)
+  vol[[i]] <- aggregate(log_return ~ time_bucket, data = log_r1, FUN = comp_vol)
+  colnames(vol[[i]]) <- c('time_bucket', 'volatility')
+  
+  len.train <- length(unique(stock100$time_bucket))
+
+length_cluster <- nrow(stock100)
+stats.bucket <- stock100 %>% 
+    select(c(BidAskSpread1,BidAskSpread2, time_bucket,bid_price1,bid_price2,ask_price1,ask_price2,bid_size2,bid_size1,ask_size1,ask_size2,WAP,WAP2, num_order))
+
+if(len.train != length(vol[[i]]$volatility)){print("ERROR")}
+     mean.bid_price1 <- aggregate(bid_price1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_price2 <- aggregate(bid_price2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_price1 <- aggregate(ask_price1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_price2 <- aggregate(ask_price2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_size2 <- aggregate(bid_size2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_size1 <- aggregate(bid_size1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_size1 <- aggregate(ask_size1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_size2 <- aggregate(ask_size2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_size2 <- aggregate(ask_size2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+  
+  
+   if(nrow(mean.ask_size2) <= 2){
+     pred.lm.forward[[i]] = vol[[i]]$volatility[nrow(vol[[i]])]
+  next}
+    
+  list.reg[[i]] <- data.frame(volatility = vol[[i]]$volatility[-1], 
+                               bid_price1 = mean.bid_price1$bid_price1[1:(len.train - 1)],
+                               bid_price2 = mean.bid_price2$bid_price2[1:(len.train - 1)],
+                               ask_price1 = mean.ask_price1$ask_price1[1:(len.train - 1)],
+                              
+                               ask_price2 = mean.ask_price2$ask_price2[1:(len.train - 1)],
+                               bid_size2 = mean.bid_size2$bid_size2[1:(len.train - 1)],
+                               bid_size1 = mean.bid_size1$bid_size1[1:(len.train - 1)],
+                               ask_size1 = mean.ask_size1$ask_size1[1:(len.train - 1)],
+                              ask_size2 = mean.ask_size2$ask_size2[1:(len.train - 1)],
+                              realised_volatility = vol[[i]]$volatility[1:(len.train - 1)]
+                              )
+
+
+  lm.models.null[[i]] <- lm(volatility ~ 1, list.reg[[i]],
+                       weights = 0.8 ^ (((len.train - 2):0) / 2))
+  lm.models.full[[i]] <- lm(volatility ~ ., list.reg[[i]],
+                       weights = 0.8 ^ (((len.train - 2):0) / 2))
+  
+  lm.models.forward[[i]] <- step(lm.models.null[[i]], direction = "forward",trace = FALSE, scope = list(lower =lm.models.null[[i]], upper =  lm.models.full[[i]]) )
+  
+  list.reg.val[[i]] <- data.frame(
+                               bid_price1 = mean.bid_price1$bid_price1[len.train],
+                               bid_price2 = mean.bid_price2$bid_price2[len.train],
+                               ask_price1 = mean.ask_price1$ask_price1[len.train],
+                              
+                               ask_price2 = mean.ask_price2$ask_price2[len.train],
+                               bid_size2 = mean.bid_size2$bid_size2[len.train],
+                               bid_size1 = mean.bid_size1$bid_size1[len.train],
+                               ask_size1 = mean.ask_size1$ask_size1[len.train],
+                              ask_size2 = mean.ask_size2$ask_size2[len.train],
+                              realised_volatility = vol[[i]]$volatility[len.train])
+  
+  pred.lm.forward[[i]] <- predict(lm.models.forward[[i]], newdata = list.reg.val[[i]])
+  if(pred.lm.forward[[i]]<0){pred.lm.forward[[i]] =0}
+  
+}
+  return(pred.lm.forward)
+}
+run_regression_aic_prev <- function(cluster_1_train) {
+for (i in 1:length(cluster_1_train)){
+  print(i)
+  sec <- cluster_1_train[[i]] %>% pull(seconds_in_bucket) - cluster_1_train[[i]]$seconds_in_bucket[1] + 1 # this resets second to 1
+  cluster_1_train[[i]]$time <- sec
+  price <- cluster_1_train[[i]]  %>% pull(WAP)
+  log_r <- log(price[-1] / price[1:(length(price) - 1)])
+  log_r1<- data.frame(time = sec[-1],  log_return = log_r)
+  start_time  = cluster_1_train[[i]]$time[1]
+  end_time = tail(cluster_1_train[[i]]$time, 1)
+  time.no.change <- (start_time:end_time)[!(start_time:end_time %in% log_r1$time)]
+  if (length(time.no.change) > 0) {
+    new.df <- data.frame(time = time.no.change, log_return = 0)
+    log_r1 <- rbind(log_r1, new.df)
+    log_r1 <- log_r1[order(log_r1$time), ]}
+  log_r1 <- log_r1 %>% mutate(time_bucket = ceiling(time / 30))
+  stock100 <- cluster_1_train[[i]] %>% mutate(time_bucket = ceiling(time / 30),
+                            num_order = bid_size1 + ask_size1 + bid_size2 + ask_size2)
+  
+  
+  filtered_time_buckets <- stock100 |> pull(time_bucket)
+  filtered_time_buckets <- unique(filtered_time_buckets)
+  log_r1 <- log_r1 |> filter(time_bucket %in% filtered_time_buckets)
+  vol[[i]] <- aggregate(log_return ~ time_bucket, data = log_r1, FUN = comp_vol)
+  colnames(vol[[i]]) <- c('time_bucket', 'volatility')
+  
+  len.train <- length(unique(stock100$time_bucket))
+
+length_cluster <- nrow(stock100)
+stats.bucket <- stock100 %>% 
+    select(c(BidAskSpread1,BidAskSpread2, time_bucket,bid_price1,bid_price2,ask_price1,ask_price2,bid_size2,bid_size1,ask_size1,ask_size2,WAP,WAP2, num_order))
+
+if(len.train != length(vol[[i]]$volatility)){print("ERROR")}
+     mean.bid_price1 <- aggregate(bid_price1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_price2 <- aggregate(bid_price2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_price1 <- aggregate(ask_price1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_price2 <- aggregate(ask_price2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_size2 <- aggregate(bid_size2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_size1 <- aggregate(bid_size1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_size1 <- aggregate(ask_size1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_size2 <- aggregate(ask_size2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_size2 <- aggregate(ask_size2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+  
+  
+   if(nrow(mean.ask_size2) <= 2){
+     pred.lm.forward[[i]] = vol[[i]]$volatility[nrow(vol[[i]])]
+  next}
+    
+  list.reg[[i]] <- data.frame(volatility = vol[[i]]$volatility[-1], 
+                               bid_price1 = mean.bid_price1$bid_price1[1:(len.train - 1)],
+                               bid_price2 = mean.bid_price2$bid_price2[1:(len.train - 1)],
+                               ask_price1 = mean.ask_price1$ask_price1[1:(len.train - 1)],
+                              
+                               ask_price2 = mean.ask_price2$ask_price2[1:(len.train - 1)],
+                               bid_size2 = mean.bid_size2$bid_size2[1:(len.train - 1)],
+                               bid_size1 = mean.bid_size1$bid_size1[1:(len.train - 1)],
+                               ask_size1 = mean.ask_size1$ask_size1[1:(len.train - 1)],
+                              ask_size2 = mean.ask_size2$ask_size2[1:(len.train - 1)],
+                              realised_volatility = vol[[i]]$volatility[1:(len.train - 1)]
+                              )
+
+
+  lm.models.null[[i]] <- lm(volatility ~ 1, list.reg[[i]],
+                       weights = 0.8 ^ (((len.train - 2):0) / 2))
+  lm.models.full[[i]] <- lm(volatility ~ ., list.reg[[i]],
+                       weights = 0.8 ^ (((len.train - 2):0) / 2))
+  
+  lm.models.forward[[i]] <- step(lm.models.null[[i]], direction = "forward",trace = FALSE, scope = list(lower =lm.models.null[[i]], upper =  lm.models.full[[i]]) )
+  
+  list.reg.val[[i]] <- data.frame(
+                               bid_price1 = mean.bid_price1$bid_price1[len.train],
+                               bid_price2 = mean.bid_price2$bid_price2[len.train],
+                               ask_price1 = mean.ask_price1$ask_price1[len.train],
+                              
+                               ask_price2 = mean.ask_price2$ask_price2[len.train],
+                               bid_size2 = mean.bid_size2$bid_size2[len.train],
+                               bid_size1 = mean.bid_size1$bid_size1[len.train],
+                               ask_size1 = mean.ask_size1$ask_size1[len.train],
+                              ask_size2 = mean.ask_size2$ask_size2[len.train],
+                              realised_volatility = vol[[i]]$volatility[len.train])
+  
+  pred.lm.forward[[i]] <- predict(lm.models.forward[[i]], newdata = list.reg.val[[i]])
+   if(pred.lm.forward[[i]] <0 ){pred.lm.forward[[i]] =  vol[[i]]$volatility[nrow(vol[[i]])]}
+  
+}
+  return(pred.lm.forward)
+}
+run_regression_aic_abs <- function(cluster_1_train) {
+for (i in 1:length(cluster_1_train)){
+  sec <- cluster_1_train[[i]] %>% pull(seconds_in_bucket) - cluster_1_train[[i]]$seconds_in_bucket[1] + 1 # this resets second to 1
+  cluster_1_train[[i]]$time <- sec
+  price <- cluster_1_train[[i]]  %>% pull(WAP)
+  log_r <- log(price[-1] / price[1:(length(price) - 1)])
+  log_r1<- data.frame(time = sec[-1],  log_return = log_r)
+  start_time  = cluster_1_train[[i]]$time[1]
+  end_time = tail(cluster_1_train[[i]]$time, 1)
+  time.no.change <- (start_time:end_time)[!(start_time:end_time %in% log_r1$time)]
+  if (length(time.no.change) > 0) {
+    new.df <- data.frame(time = time.no.change, log_return = 0)
+    log_r1 <- rbind(log_r1, new.df)
+    log_r1 <- log_r1[order(log_r1$time), ]}
+  log_r1 <- log_r1 %>% mutate(time_bucket = ceiling(time / 30))
+  stock100 <- cluster_1_train[[i]] %>% mutate(time_bucket = ceiling(time / 30),
+                            num_order = bid_size1 + ask_size1 + bid_size2 + ask_size2)
+  
+  
+  filtered_time_buckets <- stock100 |> pull(time_bucket)
+  filtered_time_buckets <- unique(filtered_time_buckets)
+  log_r1 <- log_r1 |> filter(time_bucket %in% filtered_time_buckets)
+  vol[[i]] <- aggregate(log_return ~ time_bucket, data = log_r1, FUN = comp_vol)
+  colnames(vol[[i]]) <- c('time_bucket', 'volatility')
+  
+  len.train <- length(unique(stock100$time_bucket))
+
+length_cluster <- nrow(stock100)
+stats.bucket <- stock100 %>% 
+    select(c(BidAskSpread1,BidAskSpread2, time_bucket,bid_price1,bid_price2,ask_price1,ask_price2,bid_size2,bid_size1,ask_size1,ask_size2,WAP,WAP2, num_order))
+
+if(len.train != length(vol[[i]]$volatility)){print("ERROR")}
+     mean.bid_price1 <- aggregate(bid_price1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_price2 <- aggregate(bid_price2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_price1 <- aggregate(ask_price1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_price2 <- aggregate(ask_price2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_size2 <- aggregate(bid_size2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_size1 <- aggregate(bid_size1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_size1 <- aggregate(ask_size1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_size2 <- aggregate(ask_size2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_size2 <- aggregate(ask_size2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+  
+  
+   if(nrow(mean.ask_size2) <= 2){
+     pred.lm.forward[[i]] = vol[[i]]$volatility[nrow(vol[[i]])]
+  next}
+    
+  list.reg[[i]] <- data.frame(volatility = vol[[i]]$volatility[-1], 
+                               bid_price1 = mean.bid_price1$bid_price1[1:(len.train - 1)],
+                               bid_price2 = mean.bid_price2$bid_price2[1:(len.train - 1)],
+                               ask_price1 = mean.ask_price1$ask_price1[1:(len.train - 1)],
+                              
+                               ask_price2 = mean.ask_price2$ask_price2[1:(len.train - 1)],
+                               bid_size2 = mean.bid_size2$bid_size2[1:(len.train - 1)],
+                               bid_size1 = mean.bid_size1$bid_size1[1:(len.train - 1)],
+                               ask_size1 = mean.ask_size1$ask_size1[1:(len.train - 1)],
+                              ask_size2 = mean.ask_size2$ask_size2[1:(len.train - 1)],
+                              realised_volatility = vol[[i]]$volatility[1:(len.train - 1)]
+                              )
+
+
+  lm.models.null[[i]] <- lm(volatility ~ 1, list.reg[[i]],
+                       weights = 0.8 ^ (((len.train - 2):0) / 2))
+  lm.models.full[[i]] <- lm(volatility ~ ., list.reg[[i]],
+                       weights = 0.8 ^ (((len.train - 2):0) / 2))
+  
+  lm.models.forward[[i]] <- step(lm.models.null[[i]], direction = "forward",trace = FALSE, scope = list(lower =lm.models.null[[i]], upper =  lm.models.full[[i]]) )
+  
+  list.reg.val[[i]] <- data.frame(
+                               bid_price1 = mean.bid_price1$bid_price1[len.train],
+                               bid_price2 = mean.bid_price2$bid_price2[len.train],
+                               ask_price1 = mean.ask_price1$ask_price1[len.train],
+                              
+                               ask_price2 = mean.ask_price2$ask_price2[len.train],
+                               bid_size2 = mean.bid_size2$bid_size2[len.train],
+                               bid_size1 = mean.bid_size1$bid_size1[len.train],
+                               ask_size1 = mean.ask_size1$ask_size1[len.train],
+                              ask_size2 = mean.ask_size2$ask_size2[len.train],
+                              realised_volatility = vol[[i]]$volatility[len.train])
+  
+  pred.lm.forward[[i]] <- predict(lm.models.forward[[i]], newdata = list.reg.val[[i]])
+   if(pred.lm.forward[[i]] <0 ){pred.lm.forward[[i]] = abs(pred.lm.forward[[i]])}
+  
+}
+  return(pred.lm.forward)
+}
+
+any_na <- any(is.na(prediction_results_cluster1$lm.aic.previous))
+prediction_results_cluster1$lm.aic.0 <- unlist(run_regression_aic_0(cluster_1_train))
+prediction_results_cluster1$lm.aic.abs <- unlist(run_regression_aic_abs(cluster_1_train))
+prediction_results_cluster1$lm.aic.previous <- unlist(run_regression_aic_prev(cluster_1_train))
+
+prediction_results_cluster2$lm.aic.0 <- unlist(run_regression_aic_0(cluster_2_train))
+prediction_results_cluster2$lm.aic.abs <- unlist(run_regression_aic_abs(cluster_2_train))
+prediction_results_cluster2$lm.aic.previous <- unlist(run_regression_aic_prev(cluster_2_train))
+
+prediction_results_cluster3$lm.aic.0 <- unlist(run_regression_aic_0(cluster_3_train))
+prediction_results_cluster3$lm.aic.abs <- unlist(run_regression_aic_abs(cluster_3_train))
+prediction_results_cluster3$lm.aic.previous <- unlist(run_regression_aic_prev(cluster_3_train))
+
+
+evaluation_cluster1$lm.aic.0 <- calculate_mse(vol.1.actual,prediction_results_cluster1$lm.aic.0)
+evaluation_cluster2$lm.aic.0 <- calculate_mse(vol.2.actual,prediction_results_cluster2$lm.aic.0)
+evaluation_cluster3$lm.aic.0 <- calculate_mse(vol.3.actual,prediction_results_cluster3$lm.aic.0)
+
+
+evaluation_cluster1$lm.aic.abs <- calculate_mse(vol.1.actual,prediction_results_cluster1$lm.aic.abs)
+evaluation_cluster2$lm.aic.abs <- calculate_mse(vol.2.actual,prediction_results_cluster2$lm.aic.abs)
+evaluation_cluster3$lm.aic.abs <- calculate_mse(vol.3.actual,prediction_results_cluster3$lm.aic.abs)
+
+
+evaluation_cluster1$lm.aic.previous <- calculate_mse(vol.1.actual,prediction_results_cluster1$lm.aic.previous)
+evaluation_cluster2$lm.aic.previous <- calculate_mse(vol.2.actual,prediction_results_cluster2$lm.aic.previous)
+evaluation_cluster3$lm.aic.previous <- calculate_mse(vol.3.actual,prediction_results_cluster3$lm.aic.previous)
+
+
+mean(evaluation_cluster1$lm.aic.0 )
+mean(evaluation_cluster1$lm.aic.abs)
+mean(evaluation_cluster1$lm.aic.previous)
+
+mean(evaluation_cluster2$lm.aic.0 )
+mean(evaluation_cluster2$lm.aic.abs)
+mean(evaluation_cluster1$lm.aic.previous)
+
+mean(evaluation_cluster3$lm.aic.0 )
+mean(evaluation_cluster3$lm.aic.abs)
+mean(evaluation_cluster1$lm.aic.previous)
+
+```
+
+It looks like using 0 performs the best with most clusters. As such, we will continue to replace negative values with 0.
+
+
+### Dynamic Weights
+
+So far, we have been using a weight of 0.8. We will see how using dynamic weights will affect our MSE evaluation.
+
+```{r, warning=FALSE, cache=TRUE}
+vol = list()
+list.reg <- list() 
+log_r1 <- list()
+lm.models.full <- list()
+list.reg.val <- list()
+pred.lm <- list()
+lm.models.upper <- list()
+lm.models.og <- list()
+lm.models.null<- list()
+lm.models.forward <- list()
+pred.lm.og <- list()
+pred.lm.forward <- list()
+
+run_regression_aic_optimise_weight <- function(cluster_1_train) {
+  vol <- list()
+for (i in 1:length(cluster_1_train)){
+  sec <- cluster_1_train[[i]] %>% pull(seconds_in_bucket) - cluster_1_train[[i]]$seconds_in_bucket[1] + 1 # this resets second to 1
+  cluster_1_train[[i]]$time <- sec
+  # index <- cluster_1_list[[i]] %>% pull(seconds_in_bucket) - sec[1] +1
+  price <- cluster_1_train[[i]]  %>% pull(WAP)
+  log_r <- log(price[-1] / price[1:(length(price) - 1)])
+  log_r1<- data.frame(time = sec[-1],  log_return = log_r)
+  start_time  = cluster_1_train[[i]]$time[1]
+  end_time = tail(cluster_1_train[[i]]$time, 1)
+  time.no.change <- (start_time:end_time)[!(start_time:end_time %in% log_r1$time)]
+  if (length(time.no.change) > 0) {
+    new.df <- data.frame(time = time.no.change, log_return = 0)
+    log_r1 <- rbind(log_r1, new.df)
+    log_r1 <- log_r1[order(log_r1$time), ]}
+  log_r1 <- log_r1 %>% mutate(time_bucket = ceiling(time / 30))
+  stock100 <- cluster_1_train[[i]] %>% mutate(time_bucket = ceiling(time / 30),
+                            num_order = bid_size1 + ask_size1 + bid_size2 + ask_size2)
+  filtered_time_buckets <- stock100 |> pull(time_bucket)
+  filtered_time_buckets <- unique(filtered_time_buckets)
+  log_r1 <- log_r1 |> filter(time_bucket %in% filtered_time_buckets)
+  vol[[i]] <- aggregate(log_return ~ time_bucket, data = log_r1, FUN = comp_vol)
+  colnames(vol[[i]]) <- c('time_bucket', 'volatility')
+  
+  len.train <- length(unique(stock100$time_bucket))
+
+length_cluster <- nrow(stock100)
+stats.bucket <- stock100 %>% 
+    select(c(BidAskSpread1,BidAskSpread2, time_bucket,bid_price1,bid_price2,ask_price1,ask_price2,bid_size2,bid_size1,ask_size1,ask_size2,WAP,WAP2, num_order))
+
+if(len.train != length(vol[[i]]$volatility)){print("ERROR")}
+     mean.bid_price1 <- aggregate(bid_price1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_price2 <- aggregate(bid_price2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_price1 <- aggregate(ask_price1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_price2 <- aggregate(ask_price2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_size2 <- aggregate(bid_size2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_size1 <- aggregate(bid_size1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_size1 <- aggregate(ask_size1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_size2 <- aggregate(ask_size2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_size2 <- aggregate(ask_size2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+  
+  
+   if(nrow(mean.ask_size2) <= 2){
+     pred.lm.forward[[i]] = vol[[i]]$volatility[nrow(vol[[i]])]
+  next}
+    
+  list.reg[[i]] <- data.frame(volatility = vol[[i]]$volatility[-1], 
+                               bid_price1 = mean.bid_price1$bid_price1[1:(len.train - 1)],
+                               bid_price2 = mean.bid_price2$bid_price2[1:(len.train - 1)],
+                               ask_price1 = mean.ask_price1$ask_price1[1:(len.train - 1)],
+                               ask_price2 = mean.ask_price2$ask_price2[1:(len.train - 1)],
+                               bid_size2 = mean.bid_size2$bid_size2[1:(len.train - 1)],
+                               bid_size1 = mean.bid_size1$bid_size1[1:(len.train - 1)],
+                               ask_size1 = mean.ask_size1$ask_size1[1:(len.train - 1)],
+                              ask_size2 = mean.ask_size2$ask_size2[1:(len.train - 1)],
+                              realised_volatility = vol[[i]]$volatility[1:(len.train - 1)]
+                              )
+  
+ 
+ 
+
+  # Initialize a vector to store the R-squared values for each weight
+r_squared_values <- numeric(length = 10)
+
+# Loop through the weights from 0.1 to 1, incrementing by 0.1
+for (j in 1:10) {
+  weight <- j * 0.1
+  
+  # Fit the null and full models with the current weight
+  lm.models.null[[i]] <- lm(volatility ~ 1, list.reg[[i]],
+                       weights = weight ^ (((len.train - 2):0) / 2))
+  lm.models.full[[i]] <- lm(volatility ~ ., list.reg[[i]], weights = weight ^ (((len.train - 2):0) / 2))
+  
+  # Perform forward stepwise model selection using AIC
+  lm.models.forward[[i]] <- step(lm.models.null[[i]], direction = "forward", trace = FALSE, scope = list(lower = lm.models.null[[i]], upper = lm.models.full[[i]]))
+  
+  # Calculate the R-squared value for the current model
+  r_squared_values[j] <- summary(lm.models.forward[[i]])$adj.r.squared
+}
+
+# Find the index of the best R-squared value
+best_r_squared_index <- which.max(r_squared_values)
+
+
+# Set the best weight
+best_weight <- best_r_squared_index * 0.1
+
+
+if(length(best_weight) ==0){best_weight = 0.8}
+
+# Fit the null and full models with the best weight
+lm.models.null[[i]] <- lm(volatility ~ 1, list.reg[[i]], weights = best_weight ^ (((len.train - 2):0) / 2))
+lm.models.full[[i]] <- lm(volatility ~ ., list.reg[[i]], weights = best_weight ^ (((len.train - 2):0) / 2))
+
+# Perform forward stepwise model selection using AIC with the best weight
+lm.models.forward[[i]] <- step(lm.models.null[[i]], direction = "forward", trace = FALSE, scope = list(lower = lm.models.null[[i]], upper = lm.models.full[[i]]))
+
+
+  
+  list.reg.val[[i]] <- data.frame(
+                               bid_price1 = mean.bid_price1$bid_price1[len.train],
+                               bid_price2 = mean.bid_price2$bid_price2[len.train],
+                               ask_price1 = mean.ask_price1$ask_price1[len.train],
+                               ask_price2 = mean.ask_price2$ask_price2[len.train],
+                               bid_size2 = mean.bid_size2$bid_size2[len.train],
+                               bid_size1 = mean.bid_size1$bid_size1[len.train],
+                               ask_size1 = mean.ask_size1$ask_size1[len.train],
+                              ask_size2 = mean.ask_size2$ask_size2[len.train],
+                              realised_volatility = vol[[i]]$volatility[len.train])
+  
+  pred.lm.forward[[i]] <- predict(lm.models.forward[[i]], newdata = list.reg.val[[i]])
+  if(pred.lm.forward[[i]]<0){pred.lm.forward[[i]] =0}
+  
+}
+  return(pred.lm.forward)
+}
+run_regression_aic_optimise_weight_aic <- function(cluster_1_train) {
+    vol <- list()
+for (i in 1:length(cluster_1_train)){
+  print(i)
+  sec <- cluster_1_train[[i]] %>% pull(seconds_in_bucket) - cluster_1_train[[i]]$seconds_in_bucket[1] + 1 # this resets second to 1
+  cluster_1_train[[i]]$time <- sec
+  # index <- cluster_1_list[[i]] %>% pull(seconds_in_bucket) - sec[1] +1
+  price <- cluster_1_train[[i]]  %>% pull(WAP)
+  log_r <- log(price[-1] / price[1:(length(price) - 1)])
+  log_r1<- data.frame(time = sec[-1],  log_return = log_r)
+  start_time  = cluster_1_train[[i]]$time[1]
+  end_time = tail(cluster_1_train[[i]]$time, 1)
+  time.no.change <- (start_time:end_time)[!(start_time:end_time %in% log_r1$time)]
+  if (length(time.no.change) > 0) {
+    new.df <- data.frame(time = time.no.change, log_return = 0)
+    log_r1 <- rbind(log_r1, new.df)
+    log_r1 <- log_r1[order(log_r1$time), ]}
+  
+
+  log_r1 <- log_r1 %>% mutate(time_bucket = ceiling(time / 30))
+  
+  # cluster_1_list[[i]] <-cluster_1_list[[i]]|> mutate(index = 1:nrow(cluster_1_list[[i]]))
+  stock100 <- cluster_1_train[[i]] %>% mutate(time_bucket = ceiling(time / 30),
+                            num_order = bid_size1 + ask_size1 + bid_size2 + ask_size2)
+  
+  
+  filtered_time_buckets <- stock100 |> pull(time_bucket)
+  filtered_time_buckets <- unique(filtered_time_buckets)
+  log_r1 <- log_r1 |> filter(time_bucket %in% filtered_time_buckets)
+  vol[[i]] <- aggregate(log_return ~ time_bucket, data = log_r1, FUN = comp_vol)
+  colnames(vol[[i]]) <- c('time_bucket', 'volatility')
+  
+  len.train <- length(unique(stock100$time_bucket))
+
+length_cluster <- nrow(stock100)
+stats.bucket <- stock100 %>% 
+    select(c(BidAskSpread1,BidAskSpread2, time_bucket,bid_price1,bid_price2,ask_price1,ask_price2,bid_size2,bid_size1,ask_size1,ask_size2,WAP,WAP2, num_order))
+
+if(len.train != length(vol[[i]]$volatility)){print("ERROR")}
+
+  # for each 30-sec time bucket, we compute the following statistics
+  # mean.WAP <- aggregate(WAP ~ time_bucket, data = stats.bucket, FUN = "mean")
+  #  mean.WAP2 <- aggregate(WAP2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+  #   mean.BidAskSpread1 <- aggregate(BidAskSpread1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+  #    mean.BidAskSpread2 <- aggregate(BidAskSpread2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_price1 <- aggregate(bid_price1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_price2 <- aggregate(bid_price2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_price1 <- aggregate(ask_price1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_price2 <- aggregate(ask_price2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_size2 <- aggregate(bid_size2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_size1 <- aggregate(bid_size1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_size1 <- aggregate(ask_size1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_size2 <- aggregate(ask_size2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_size2 <- aggregate(ask_size2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     # mean.price <- aggregate(WAP ~ time_bucket, data = stats.bucket, FUN = "mean")
+  # mean.order <- aggregate(num_order ~ time_bucket, data = stats.bucket, FUN = "mean")
+  # mean.BAS <- aggregate(BidAskSpread1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+  
+  
+   if(nrow(mean.ask_size2) <= 2){
+     pred.lm.forward[[i]] = vol[[i]]$volatility[nrow(vol[[i]])]
+  next}
+    
+  list.reg[[i]] <- data.frame(volatility = vol[[i]]$volatility[-1], 
+                              # WAP = mean.WAP$WAP[1:(len.train - 1)],
+                              # WAP2 = mean.WAP2$WAP2[1:(len.train - 1)],
+                              # BidAskSpread1 = mean.BidAskSpread1$BidAskSpread1[1:(len.train - 1)],
+                              #  BidAskSpread2 = mean.BidAskSpread2$BidAskSpread2[1:(len.train - 1)],
+                               bid_price1 = mean.bid_price1$bid_price1[1:(len.train - 1)],
+                               bid_price2 = mean.bid_price2$bid_price2[1:(len.train - 1)],
+                               ask_price1 = mean.ask_price1$ask_price1[1:(len.train - 1)],
+                              
+                               ask_price2 = mean.ask_price2$ask_price2[1:(len.train - 1)],
+                               bid_size2 = mean.bid_size2$bid_size2[1:(len.train - 1)],
+                               bid_size1 = mean.bid_size1$bid_size1[1:(len.train - 1)],
+                               ask_size1 = mean.ask_size1$ask_size1[1:(len.train - 1)],
+                              ask_size2 = mean.ask_size2$ask_size2[1:(len.train - 1)],
+                              # price = mean.price$WAP[1:(len.train - 1)],
+                              # order = mean.order$num_order[1:(len.train - 1)],
+                              # BidAskSpread = mean.BAS$BidAskSpread[1:(len.train - 1)],
+                              realised_volatility = vol[[i]]$volatility[1:(len.train - 1)]
+                              )
+  
+ 
+ 
+
+  # Initialize a vector to store the R-squared values for each weight
+aic <- numeric(length = 10)
+
+# Loop through the weights from 0.1 to 1, incrementing by 0.1
+for (j in 1:10) {
+  weight <- j * 0.1
+  # Fit the null and full models with the current weight
+  lm.models.null[[i]] <- lm(volatility ~ 1, list.reg[[i]],
+                       weights = weight ^ (((len.train - 2):0) / 2))
+  lm.models.full[[i]] <- lm(volatility ~ ., list.reg[[i]], weights = weight ^ (((len.train - 2):0) / 2))
+  
+  # Perform forward stepwise model selection using AIC
+  lm.models.forward[[i]] <- step(lm.models.null[[i]], direction = "forward", trace = FALSE, scope = list(lower = lm.models.null[[i]], upper = lm.models.full[[i]]))
+  aic[j] <- AIC(lm.models.forward[[i]])
+}
+
+
+# Find the index of the best R-squared value
+best_aic <- which.min(aic)
+
+
+# Set the best weight
+best_weight <- best_aic * 0.1
+print(best_weight)
+
+# Fit the null and full models with the best weight
+lm.models.null[[i]] <- lm(volatility ~ 1, list.reg[[i]], weights = best_weight ^ (((len.train - 2):0) / 2))
+lm.models.full[[i]] <- lm(volatility ~ ., list.reg[[i]], weights = best_weight ^ (((len.train - 2):0) / 2))
+
+# Perform forward stepwise model selection using AIC with the best weight
+lm.models.forward[[i]] <- step(lm.models.null[[i]], direction = "forward", trace = FALSE, scope = list(lower = lm.models.null[[i]], upper = lm.models.full[[i]]))
+
+
+  
+  list.reg.val[[i]] <- data.frame(
+                              # WAP = mean.WAP$WAP[len.train],
+                              # WAP2 = mean.WAP2$WAP2[len.train],
+                              # BidAskSpread1 = mean.BidAskSpread1$BidAskSpread1[len.train],
+                              #  BidAskSpread2 = mean.BidAskSpread2$BidAskSpread2[len.train],
+                               bid_price1 = mean.bid_price1$bid_price1[len.train],
+                               bid_price2 = mean.bid_price2$bid_price2[len.train],
+                               ask_price1 = mean.ask_price1$ask_price1[len.train],
+                              
+                               ask_price2 = mean.ask_price2$ask_price2[len.train],
+                               bid_size2 = mean.bid_size2$bid_size2[len.train],
+                               bid_size1 = mean.bid_size1$bid_size1[len.train],
+                               ask_size1 = mean.ask_size1$ask_size1[len.train],
+                              ask_size2 = mean.ask_size2$ask_size2[len.train],
+                              # price = mean.price$WAP[len.train],
+                              # order = mean.order$num_order[len.train],
+                              # BidAskSpread = mean.BAS$BidAskSpread[len.train],
+                              realised_volatility = vol[[i]]$volatility[len.train])
+  
+  pred.lm.forward[[i]] <- predict(lm.models.forward[[i]], newdata = list.reg.val[[i]])
+  if(pred.lm.forward[[i]]<0){pred.lm.forward[[i]] =0}
+  
+  
+}
+  return(pred.lm.forward)
+}
+
+
+prediction_results_cluster1$lm.aic.weight1 <- unlist(run_regression_aic_optimise_weight(cluster_1_train))
+prediction_results_cluster1$lm.aic.weight2 <- unlist(run_regression_aic_optimise_weight_aic(cluster_1_train))
+
+prediction_results_cluster2$lm.aic.weight1 <- unlist(run_regression_aic_optimise_weight(cluster_2_train))
+prediction_results_cluster2$lm.aic.weight2 <- unlist(run_regression_aic_optimise_weight_aic(cluster_2_train))
+
+
+prediction_results_cluster3$lm.aic.weight1 <- unlist(run_regression_aic_optimise_weight(cluster_3_train))
+prediction_results_cluster3$lm.aic.weight2 <- unlist(run_regression_aic_optimise_weight_aic(cluster_3_train))
+
+
+evaluation_cluster1$MSE.lm.aic.weight1<- calculate_mse(vol.1.actual,prediction_results_cluster1$lm.aic.weight1)
+evaluation_cluster2$MSE.lm.aic.weight1 <- calculate_mse(vol.2.actual,prediction_results_cluster2$lm.aic.weight1) 
+evaluation_cluster3$MSE.lm.aic.weight1 <- calculate_mse(vol.3.actual,prediction_results_cluster3$lm.aic.weight1) 
+
+
+evaluation_cluster1$MSE.lm.aic.weight2<- calculate_mse(vol.1.actual,prediction_results_cluster1$lm.aic.weight2)
+evaluation_cluster2$MSE.lm.aic.weight2 <- calculate_mse(vol.2.actual,prediction_results_cluster2$lm.aic.weight2) 
+evaluation_cluster3$MSE.lm.aic.weight2 <- calculate_mse(vol.3.actual,prediction_results_cluster3$lm.aic.weight2) 
+
+
+mean(evaluation_cluster1$MSE.lm.aic.weight2)
+mean(evaluation_cluster1$MSE.lm.aic.weight1)
+mean(evaluation_cluster2$MSE.lm.aic.weight2)
+mean(evaluation_cluster2$MSE.lm.aic.weight1)
+mean(evaluation_cluster3$MSE.lm.aic.weight2)
+mean(evaluation_cluster3$MSE.lm.aic.weight1)
+
+```
+
+It's interesing to see that using R^2 as a determination factor performs the best for cluster 1 and 2. However, using a stagnant weight of 0.8 performs best for cluster 3
+
+
+###### Testing stagnant weights 
+
+```{r, message=FALSE, warning=FALSE}
+weights <- c(0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1,1.2,1.4,1.6,1.8)
+
+run_regression_aic_prev <- function(cluster_1_train, weight) {
+for (i in 1:length(cluster_1_train)){
+  # print(i)
+  # i = 1872
+  # cluster_1_train = cluster_3_train
+  # i = 2
+  sec <- cluster_1_train[[i]] %>% pull(seconds_in_bucket) - cluster_1_train[[i]]$seconds_in_bucket[1] + 1 # this resets second to 1
+  cluster_1_train[[i]]$time <- sec
+  # index <- cluster_1_list[[i]] %>% pull(seconds_in_bucket) - sec[1] +1
+  price <- cluster_1_train[[i]]  %>% pull(WAP)
+  log_r <- log(price[-1] / price[1:(length(price) - 1)])
+  log_r1<- data.frame(time = sec[-1],  log_return = log_r)
+  start_time  = cluster_1_train[[i]]$time[1]
+  end_time = tail(cluster_1_train[[i]]$time, 1)
+  time.no.change <- (start_time:end_time)[!(start_time:end_time %in% log_r1$time)]
+  if (length(time.no.change) > 0) {
+    new.df <- data.frame(time = time.no.change, log_return = 0)
+    log_r1 <- rbind(log_r1, new.df)
+    log_r1 <- log_r1[order(log_r1$time), ]}
+  
+
+  log_r1 <- log_r1 %>% mutate(time_bucket = ceiling(time / 30))
+  
+  # cluster_1_list[[i]] <-cluster_1_list[[i]]|> mutate(index = 1:nrow(cluster_1_list[[i]]))
+  stock100 <- cluster_1_train[[i]] %>% mutate(time_bucket = ceiling(time / 30),
+                            num_order = bid_size1 + ask_size1 + bid_size2 + ask_size2)
+  
+  
+  filtered_time_buckets <- stock100 |> pull(time_bucket)
+  filtered_time_buckets <- unique(filtered_time_buckets)
+  log_r1 <- log_r1 |> filter(time_bucket %in% filtered_time_buckets)
+  vol[[i]] <- aggregate(log_return ~ time_bucket, data = log_r1, FUN = comp_vol)
+  colnames(vol[[i]]) <- c('time_bucket', 'volatility')
+  
+  len.train <- length(unique(stock100$time_bucket))
+
+length_cluster <- nrow(stock100)
+stats.bucket <- stock100 %>% 
+    select(c(BidAskSpread1,BidAskSpread2, time_bucket,bid_price1,bid_price2,ask_price1,ask_price2,bid_size2,bid_size1,ask_size1,ask_size2,WAP,WAP2, num_order))
+
+if(len.train != length(vol[[i]]$volatility)){print("ERROR")}
+
+  # for each 30-sec time bucket, we compute the following statistics
+  mean.WAP <- aggregate(WAP ~ time_bucket, data = stats.bucket, FUN = "mean")
+   mean.WAP2 <- aggregate(WAP2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+    mean.BidAskSpread1 <- aggregate(BidAskSpread1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.BidAskSpread2 <- aggregate(BidAskSpread2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_price1 <- aggregate(bid_price1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_price2 <- aggregate(bid_price2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_price1 <- aggregate(ask_price1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_price2 <- aggregate(ask_price2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_size2 <- aggregate(bid_size2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_size1 <- aggregate(bid_size1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_size1 <- aggregate(ask_size1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_size2 <- aggregate(ask_size2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_size2 <- aggregate(ask_size2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.price <- aggregate(WAP ~ time_bucket, data = stats.bucket, FUN = "mean")
+  mean.order <- aggregate(num_order ~ time_bucket, data = stats.bucket, FUN = "mean")
+  mean.BAS <- aggregate(BidAskSpread1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+  
+  
+   if(nrow(mean.BAS) <= 2){
+     pred.lm.forward[[i]] = vol[[i]]$volatility[nrow(vol[[i]])]
+  next}
+    
+  list.reg[[i]] <- data.frame(volatility = vol[[i]]$volatility[-1], 
+                              WAP = mean.WAP$WAP[1:(len.train - 1)],
+                              WAP2 = mean.WAP2$WAP2[1:(len.train - 1)],
+                              BidAskSpread1 = mean.BidAskSpread1$BidAskSpread1[1:(len.train - 1)],
+                               BidAskSpread2 = mean.BidAskSpread2$BidAskSpread2[1:(len.train - 1)],
+                               bid_price1 = mean.bid_price1$bid_price1[1:(len.train - 1)],
+                               bid_price2 = mean.bid_price2$bid_price2[1:(len.train - 1)],
+                               ask_price1 = mean.ask_price1$ask_price1[1:(len.train - 1)],
+                              
+                               ask_price2 = mean.ask_price2$ask_price2[1:(len.train - 1)],
+                               bid_size2 = mean.bid_size2$bid_size2[1:(len.train - 1)],
+                               bid_size1 = mean.bid_size1$bid_size1[1:(len.train - 1)],
+                               ask_size1 = mean.ask_size1$ask_size1[1:(len.train - 1)],
+                              ask_size2 = mean.ask_size2$ask_size2[1:(len.train - 1)],
+                              price = mean.price$WAP[1:(len.train - 1)],
+                              order = mean.order$num_order[1:(len.train - 1)],
+                              BidAskSpread = mean.BAS$BidAskSpread[1:(len.train - 1)],
+                              realised_volatility = vol[[i]]$volatility[1:(len.train - 1)]
+                              )
+  
+ 
+ 
+
+  lm.models.null[[i]] <- lm(volatility ~ 1, list.reg[[i]],
+                       weights = weight ^ (((len.train - 2):0) / 2))
+  lm.models.full[[i]] <- lm(volatility ~ ., list.reg[[i]],
+                       weights = weight ^ (((len.train - 2):0) / 2))
+
+  
+  
+  lm.models.forward[[i]] <- step(lm.models.null[[i]],direction = "forward",trace = FALSE, scope = list(lower =lm.models.null[[i]], upper =  lm.models.full[[i]]) )
+
+  
+  list.reg.val[[i]] <- data.frame(
+                              WAP = mean.WAP$WAP[len.train],
+                              WAP2 = mean.WAP2$WAP2[len.train],
+                              BidAskSpread1 = mean.BidAskSpread1$BidAskSpread1[len.train],
+                               BidAskSpread2 = mean.BidAskSpread2$BidAskSpread2[len.train],
+                               bid_price1 = mean.bid_price1$bid_price1[len.train],
+                               bid_price2 = mean.bid_price2$bid_price2[len.train],
+                               ask_price1 = mean.ask_price1$ask_price1[len.train],
+                              
+                               ask_price2 = mean.ask_price2$ask_price2[len.train],
+                               bid_size2 = mean.bid_size2$bid_size2[len.train],
+                               bid_size1 = mean.bid_size1$bid_size1[len.train],
+                               ask_size1 = mean.ask_size1$ask_size1[len.train],
+                              ask_size2 = mean.ask_size2$ask_size2[len.train],
+                              price = mean.price$WAP[len.train],
+                              order = mean.order$num_order[len.train],
+                              BidAskSpread = mean.BAS$BidAskSpread[len.train],
+                              realised_volatility = vol[[i]]$volatility[len.train])
+  
+  pred.lm.forward[[i]] <- predict(lm.models.forward[[i]], newdata = list.reg.val[[i]])
+  
+  if(pred.lm.forward[[i]] <0 ){pred.lm.forward[[i]] = vol[[i]]$volatility[nrow(vol[[i]])]}
+  
+  
+  
+}
+  return(pred.lm.forward)
+}
+
+
+weights_dataframe <- data.frame(rep(NA, length(weights)))
+
+weights_dataframe$weight <- rep(NA, length(weights))
+weights_dataframe$mse <- rep(NA, length(weights))
+
+
+for(i in 1:length(weights)){
+  weights_dataframe$weight[i] <- weights[i]
+   
+     weights_dataframe$mse[i] <- mean(calculate_mse(vol.1.actual,run_regression_aic_prev(cluster_1_train, weights[i])))
+  
+}
+
+
+weights_dataframe2 <- data.frame(rep(NA, length(weights)))
+
+weights_dataframe2$weight <- rep(NA, length(weights))
+weights_dataframe2$mse <- rep(NA, length(weights))
+
+
+for(i in 1:length(weights)){
+  weights_dataframe2$weight[i] <- weights[i]
+   
+     weights_dataframe2$mse[i] <- mean(calculate_mse(vol.2.actual,run_regression_aic_prev(cluster_2_train, weights[i])))
+  
+}
+
+
+
+weights_dataframe3 <- data.frame(rep(NA, length(weights)))
+
+weights_dataframe3$weight <- rep(NA, length(weights))
+weights_dataframe3$mse <- rep(NA, length(weights))
+
+
+for(i in 1:length(weights)){
+  weights_dataframe3$weight[i] <- weights[i]
+   
+     weights_dataframe3$mse[i] <- mean(calculate_mse(vol.3.actual,run_regression_aic_prev(cluster_3_train, weights[i])))
+  
+}
+
+
+```
+
+Suprisingly, it Looks like weight of 1 produces the best predictions for cluster 1 and 2.
+Additionally, a weight of 0.2 works best for cluster 3 and a weight of 
+
+
+
+
+
+
+## HAV
+```{r, warning=FALSE}
+list.HAV <- list()
+vol = list()
+log_r1 <- list()
+HAV.models <- list()
+list.HAV.val <- list()
+pred.HAV.wls <- list()
+pred.HAV.ols <- list()
+quar <- list()
+HAV.ols.models <- list()
+HAV.wls.models <- list()
+list.HAV.val <- list()
+comp_quar <- function(x) {
+  return(length(x) / 3 * sum(x ^ 4))
+}
+
+run_hav.wls <- function(cluster_1_train) {
+for (i in 1:length(cluster_1_train)){
+  print(i)
+  
+  # cluster_1_list[[i]] <-  cluster_1_list[[i]] |> mutate(index = 1:nrow(cluster_1_list[[i]]))
+  sec <- cluster_1_train[[i]] %>% pull(seconds_in_bucket) - cluster_1_train[[i]]$seconds_in_bucket[1] + 1 # this resets second to 1
+  cluster_1_train[[i]]$time <- sec
+  # index <- cluster_1_list[[i]] %>% pull(seconds_in_bucket) - sec[1] +1
+  price <- cluster_1_train[[i]]  %>% pull(WAP)
+  log_r <- log(price[-1] / price[1:(length(price) - 1)])
+  log_r1<- data.frame(time = sec[-1],  log_return = log_r)
+  start_time  = cluster_1_train[[i]]$time[1]
+  end_time = tail(cluster_1_train[[i]]$time, 1)
+  time.no.change <- (start_time:end_time)[!(start_time:end_time %in% log_r1$time)]
+  if (length(time.no.change) > 0) {
+    new.df <- data.frame(time = time.no.change, log_return = 0)
+    log_r1 <- rbind(log_r1, new.df)
+    log_r1 <- log_r1[order(log_r1$time), ]}
+
+
+  log_r1 <- log_r1 %>% mutate(time_bucket = ceiling(time / 30))
+
+  # cluster_1_list[[i]] <-cluster_1_list[[i]]|> mutate(index = 1:nrow(cluster_1_list[[i]]))
+  stock100 <- cluster_1_train[[i]] %>% mutate(time_bucket = ceiling(time / 30),
+                            num_order = bid_size1 + ask_size1 + bid_size2 + ask_size2)
+
+
+  filtered_time_buckets <- stock100 |> pull(time_bucket)
+  filtered_time_buckets <- unique(filtered_time_buckets)
+  log_r1 <- log_r1 |> filter(time_bucket %in% filtered_time_buckets)
+  vol[[i]] <- aggregate(log_return ~ time_bucket, data = log_r1, FUN = comp_vol)
+  colnames(vol[[i]]) <- c('time_bucket', 'volatility')
+  len = length(unique(vol[[i]]$time_bucket))
+  
+  length_each_time_bucket = 5
+  if(len <7 ){length_each_time_bucket = 2}
+  if(len <= 2 ){pred.HAV.wls[[i]] =vol[[i]]$volatility[length(vol[[i]]$volatility)] 
+  next
+  }
+  
+  time_buckets_to_calculate <- len - length_each_time_bucket
+
+  mean.vol <- rep(0, time_buckets_to_calculate)
+  for (j in 1 : max(length_each_time_bucket,1)) {
+    mean.vol <- mean.vol + vol[[i]]$volatility[j : (j + (time_buckets_to_calculate-1) )] / length_each_time_bucket
+  }
+
+  list.HAV[[i]] <- data.frame(vol = vol[[i]]$volatility[-(1:length_each_time_bucket)],
+                              vol_1 = vol[[i]]$volatility[length_each_time_bucket:(len - 1)],
+                              mean_vol_5 = mean.vol)
+
+
+    quar[[i]] <- aggregate(log_return ~ time_bucket, data = log_r1, FUN = comp_quar)
+  colnames(quar[[i]]) <- c('time_bucket', 'quarticity')
+  HAV.ols.models[[i]] <- lm(vol ~ vol_1 + mean_vol_5, list.HAV[[i]])
+  
+any_row_with_all_zeros <- any(apply( list.HAV[[i]], 1, function(x) all(x == 0)))
+
+
+
+if (any_row_with_all_zeros){
+  
+  list.HAV.val[[i]] <- data.frame(
+                              vol_1 = vol[[i]]$volatility[len],
+                              mean_vol_5 = mean(vol[[i]]$volatility[(len-length_each_time_bucket+1):len]))
+  pred.HAV.wls[[i]] <- predict(HAV.ols.models[[i]], newdata = list.HAV.val[[i]])
+  
+  next
+  
+}
+
+if (len == 3 && (list.HAV[[i]]$vol_1 == 0 |   list.HAV[[i]]$mean_vol_5 == 0)){
+  
+  list.HAV.val[[i]] <- data.frame(
+                              vol_1 = vol[[i]]$volatility[len],
+                              mean_vol_5 = mean(vol[[i]]$volatility[(len-length_each_time_bucket+1):len]))
+  pred.HAV.wls[[i]] <- predict(HAV.ols.models[[i]], newdata = list.HAV.val[[i]])
+  
+  next
+  
+}
+
+
+  HAV.wls.models[[i]] <- lm(vol ~ vol_1 + mean_vol_5, list.HAV[[i]],
+                            weights = list.HAV[[i]]$vol_1 /
+                              sqrt(quar[[i]]$quarticity[length_each_time_bucket:(len - 1)]))
+
+   
+   
+  list.HAV.val[[i]] <- data.frame(
+                              vol_1 = vol[[i]]$volatility[len],
+                              mean_vol_5 = mean(vol[[i]]$volatility[(len-length_each_time_bucket+1):len]))
+  pred.HAV.wls[[i]] <- predict(HAV.wls.models[[i]], newdata = list.HAV.val[[i]])
+  
+  
+  # pred.HAV.ols[[i]] <- predict(HAV.ols.models[[i]], newdata = list.HAV.val[[i]])
+
+
+}
+return(pred.HAV.wls)
+}
+
+
+
+pred.hav.wls.1 = run_hav.wls(cluster_1_train)
+pred.hav.wls.2 = run_hav.wls(cluster_2_train)
+pred.hav.wls.3 = run_hav.wls(cluster_3_train)
+
+mean(calculate_mse(vol.1.actual,pred.hav.wls.1))
+mean(calculate_mse(vol.2.actual,pred.hav.wls.2))
+mean(calculate_mse(vol.3.actual,pred.hav.wls.3))
+
+
+prediction_results_cluster1$pred.hav.wls.1 <- unlist(pred.hav.wls.1)
+evaluation_cluster1$MSE.pred.hav.wls.1 <- calculate_mse(vol.1.actual,pred.hav.wls.1)
+
+prediction_results_cluster2$pred.hav.wls.2 <- unlist(pred.hav.wls.2)
+evaluation_cluster2$MSE.pred.hav.wls.2 <- calculate_mse(vol.2.actual,pred.hav.wls.2)
+
+prediction_results_cluster3$pred.hav.wls.3 <- unlist(pred.hav.wls.3)
+evaluation_cluster3$MSE.pred.hav.wls.3 <- calculate_mse(vol.3.actual,pred.hav.wls.3)
+
+```
+
+due to us only validating/testing using 1 bucket, hav doesnt work since it needs to have a statistic bucket with the vol vol_1 and mean_vol which is impossible to get from 1 time bucket
+
+### HAV NEGATIVE VALUES
+
+
+```{r, warning=FALSE}
+run_hav.wls.0 <- function(cluster_1_train) {
+for (i in 1:length(cluster_1_train)){
+  print(i)
+  
+  # cluster_1_list[[i]] <-  cluster_1_list[[i]] |> mutate(index = 1:nrow(cluster_1_list[[i]]))
+  sec <- cluster_1_train[[i]] %>% pull(seconds_in_bucket) - cluster_1_train[[i]]$seconds_in_bucket[1] + 1 # this resets second to 1
+  cluster_1_train[[i]]$time <- sec
+  # index <- cluster_1_list[[i]] %>% pull(seconds_in_bucket) - sec[1] +1
+  price <- cluster_1_train[[i]]  %>% pull(WAP)
+  log_r <- log(price[-1] / price[1:(length(price) - 1)])
+  log_r1<- data.frame(time = sec[-1],  log_return = log_r)
+  start_time  = cluster_1_train[[i]]$time[1]
+  end_time = tail(cluster_1_train[[i]]$time, 1)
+  time.no.change <- (start_time:end_time)[!(start_time:end_time %in% log_r1$time)]
+  if (length(time.no.change) > 0) {
+    new.df <- data.frame(time = time.no.change, log_return = 0)
+    log_r1 <- rbind(log_r1, new.df)
+    log_r1 <- log_r1[order(log_r1$time), ]}
+
+
+  log_r1 <- log_r1 %>% mutate(time_bucket = ceiling(time / 30))
+
+  # cluster_1_list[[i]] <-cluster_1_list[[i]]|> mutate(index = 1:nrow(cluster_1_list[[i]]))
+  stock100 <- cluster_1_train[[i]] %>% mutate(time_bucket = ceiling(time / 30),
+                            num_order = bid_size1 + ask_size1 + bid_size2 + ask_size2)
+
+
+  filtered_time_buckets <- stock100 |> pull(time_bucket)
+  filtered_time_buckets <- unique(filtered_time_buckets)
+  log_r1 <- log_r1 |> filter(time_bucket %in% filtered_time_buckets)
+  vol[[i]] <- aggregate(log_return ~ time_bucket, data = log_r1, FUN = comp_vol)
+  colnames(vol[[i]]) <- c('time_bucket', 'volatility')
+  len = length(unique(vol[[i]]$time_bucket))
+  
+  length_each_time_bucket = 5
+  if(len <7 ){length_each_time_bucket = 2}
+  if(len <= 2 ){pred.HAV.wls[[i]] =vol[[i]]$volatility[length(vol[[i]]$volatility)] 
+  next
+  }
+  
+  time_buckets_to_calculate <- len - length_each_time_bucket
+
+  mean.vol <- rep(0, time_buckets_to_calculate)
+  for (j in 1 : max(length_each_time_bucket,1)) {
+    mean.vol <- mean.vol + vol[[i]]$volatility[j : (j + (time_buckets_to_calculate-1) )] / length_each_time_bucket
+  }
+
+  list.HAV[[i]] <- data.frame(vol = vol[[i]]$volatility[-(1:length_each_time_bucket)],
+                              vol_1 = vol[[i]]$volatility[length_each_time_bucket:(len - 1)],
+                              mean_vol_5 = mean.vol)
+
+
+    quar[[i]] <- aggregate(log_return ~ time_bucket, data = log_r1, FUN = comp_quar)
+  colnames(quar[[i]]) <- c('time_bucket', 'quarticity')
+  HAV.ols.models[[i]] <- lm(vol ~ vol_1 + mean_vol_5, list.HAV[[i]])
+  
+any_row_with_all_zeros <- any(apply( list.HAV[[i]], 1, function(x) all(x == 0)))
+
+
+
+if (any_row_with_all_zeros){
+  
+  list.HAV.val[[i]] <- data.frame(
+                              vol_1 = vol[[i]]$volatility[len],
+                              mean_vol_5 = mean(vol[[i]]$volatility[(len-length_each_time_bucket+1):len]))
+  pred.HAV.wls[[i]] <- predict(HAV.ols.models[[i]], newdata = list.HAV.val[[i]])
+  
+  next
+  
+}
+
+if (len == 3 && (list.HAV[[i]]$vol_1 == 0 |   list.HAV[[i]]$mean_vol_5 == 0)){
+  
+  list.HAV.val[[i]] <- data.frame(
+                              vol_1 = vol[[i]]$volatility[len],
+                              mean_vol_5 = mean(vol[[i]]$volatility[(len-length_each_time_bucket+1):len]))
+  pred.HAV.wls[[i]] <- predict(HAV.ols.models[[i]], newdata = list.HAV.val[[i]])
+  
+  next
+  
+}
+
+
+  HAV.wls.models[[i]] <- lm(vol ~ vol_1 + mean_vol_5, list.HAV[[i]],
+                            weights = list.HAV[[i]]$vol_1 /
+                              sqrt(quar[[i]]$quarticity[length_each_time_bucket:(len - 1)]))
+
+   
+   
+  list.HAV.val[[i]] <- data.frame(
+                              vol_1 = vol[[i]]$volatility[len],
+                              mean_vol_5 = mean(vol[[i]]$volatility[(len-length_each_time_bucket+1):len]))
+  pred.HAV.wls[[i]] <- predict(HAV.wls.models[[i]], newdata = list.HAV.val[[i]])
+  if(pred.HAV.wls[[i]] <0 ){pred.HAV.wls[[i]] = 0}
+ 
+}
+return(pred.HAV.wls)
+}
+run_hav.wls.abs <- function(cluster_1_train) {
+for (i in 1:length(cluster_1_train)){
+  print(i)
+  
+  # cluster_1_list[[i]] <-  cluster_1_list[[i]] |> mutate(index = 1:nrow(cluster_1_list[[i]]))
+  sec <- cluster_1_train[[i]] %>% pull(seconds_in_bucket) - cluster_1_train[[i]]$seconds_in_bucket[1] + 1 # this resets second to 1
+  cluster_1_train[[i]]$time <- sec
+  # index <- cluster_1_list[[i]] %>% pull(seconds_in_bucket) - sec[1] +1
+  price <- cluster_1_train[[i]]  %>% pull(WAP)
+  log_r <- log(price[-1] / price[1:(length(price) - 1)])
+  log_r1<- data.frame(time = sec[-1],  log_return = log_r)
+  start_time  = cluster_1_train[[i]]$time[1]
+  end_time = tail(cluster_1_train[[i]]$time, 1)
+  time.no.change <- (start_time:end_time)[!(start_time:end_time %in% log_r1$time)]
+  if (length(time.no.change) > 0) {
+    new.df <- data.frame(time = time.no.change, log_return = 0)
+    log_r1 <- rbind(log_r1, new.df)
+    log_r1 <- log_r1[order(log_r1$time), ]}
+
+
+  log_r1 <- log_r1 %>% mutate(time_bucket = ceiling(time / 30))
+
+  # cluster_1_list[[i]] <-cluster_1_list[[i]]|> mutate(index = 1:nrow(cluster_1_list[[i]]))
+  stock100 <- cluster_1_train[[i]] %>% mutate(time_bucket = ceiling(time / 30),
+                            num_order = bid_size1 + ask_size1 + bid_size2 + ask_size2)
+
+
+  filtered_time_buckets <- stock100 |> pull(time_bucket)
+  filtered_time_buckets <- unique(filtered_time_buckets)
+  log_r1 <- log_r1 |> filter(time_bucket %in% filtered_time_buckets)
+  vol[[i]] <- aggregate(log_return ~ time_bucket, data = log_r1, FUN = comp_vol)
+  colnames(vol[[i]]) <- c('time_bucket', 'volatility')
+  len = length(unique(vol[[i]]$time_bucket))
+  
+  length_each_time_bucket = 5
+  if(len <7 ){length_each_time_bucket = 2}
+  if(len <= 2 ){pred.HAV.wls[[i]] =vol[[i]]$volatility[length(vol[[i]]$volatility)] 
+  next
+  }
+  
+  time_buckets_to_calculate <- len - length_each_time_bucket
+
+  mean.vol <- rep(0, time_buckets_to_calculate)
+  for (j in 1 : max(length_each_time_bucket,1)) {
+    mean.vol <- mean.vol + vol[[i]]$volatility[j : (j + (time_buckets_to_calculate-1) )] / length_each_time_bucket
+  }
+
+  list.HAV[[i]] <- data.frame(vol = vol[[i]]$volatility[-(1:length_each_time_bucket)],
+                              vol_1 = vol[[i]]$volatility[length_each_time_bucket:(len - 1)],
+                              mean_vol_5 = mean.vol)
+
+
+    quar[[i]] <- aggregate(log_return ~ time_bucket, data = log_r1, FUN = comp_quar)
+  colnames(quar[[i]]) <- c('time_bucket', 'quarticity')
+  HAV.ols.models[[i]] <- lm(vol ~ vol_1 + mean_vol_5, list.HAV[[i]])
+  
+any_row_with_all_zeros <- any(apply( list.HAV[[i]], 1, function(x) all(x == 0)))
+
+
+
+if (any_row_with_all_zeros){
+  
+  list.HAV.val[[i]] <- data.frame(
+                              vol_1 = vol[[i]]$volatility[len],
+                              mean_vol_5 = mean(vol[[i]]$volatility[(len-length_each_time_bucket+1):len]))
+  pred.HAV.wls[[i]] <- predict(HAV.ols.models[[i]], newdata = list.HAV.val[[i]])
+  
+  next
+  
+}
+
+if (len == 3 && (list.HAV[[i]]$vol_1 == 0 |   list.HAV[[i]]$mean_vol_5 == 0)){
+  
+  list.HAV.val[[i]] <- data.frame(
+                              vol_1 = vol[[i]]$volatility[len],
+                              mean_vol_5 = mean(vol[[i]]$volatility[(len-length_each_time_bucket+1):len]))
+  pred.HAV.wls[[i]] <- predict(HAV.ols.models[[i]], newdata = list.HAV.val[[i]])
+  
+  next
+  
+}
+
+
+  HAV.wls.models[[i]] <- lm(vol ~ vol_1 + mean_vol_5, list.HAV[[i]],
+                            weights = list.HAV[[i]]$vol_1 /
+                              sqrt(quar[[i]]$quarticity[length_each_time_bucket:(len - 1)]))
+
+   
+   
+  list.HAV.val[[i]] <- data.frame(
+                              vol_1 = vol[[i]]$volatility[len],
+                              mean_vol_5 = mean(vol[[i]]$volatility[(len-length_each_time_bucket+1):len]))
+  pred.HAV.wls[[i]] <- predict(HAV.wls.models[[i]], newdata = list.HAV.val[[i]])
+  if(pred.HAV.wls[[i]] <0 ){pred.HAV.wls[[i]] = abs(pred.HAV.wls[[i]])}
+ 
+}
+return(pred.HAV.wls)
+}
+run_hav.wls.prev <- function(cluster_1_train) {
+  vol <- list()
+for (i in 1:length(cluster_1_train)){
+  print(i)
+  
+  # cluster_1_list[[i]] <-  cluster_1_list[[i]] |> mutate(index = 1:nrow(cluster_1_list[[i]]))
+  sec <- cluster_1_train[[i]] %>% pull(seconds_in_bucket) - cluster_1_train[[i]]$seconds_in_bucket[1] + 1 # this resets second to 1
+  cluster_1_train[[i]]$time <- sec
+  # index <- cluster_1_list[[i]] %>% pull(seconds_in_bucket) - sec[1] +1
+  price <- cluster_1_train[[i]]  %>% pull(WAP)
+  log_r <- log(price[-1] / price[1:(length(price) - 1)])
+  log_r1<- data.frame(time = sec[-1],  log_return = log_r)
+  start_time  = cluster_1_train[[i]]$time[1]
+  end_time = tail(cluster_1_train[[i]]$time, 1)
+  time.no.change <- (start_time:end_time)[!(start_time:end_time %in% log_r1$time)]
+  if (length(time.no.change) > 0) {
+    new.df <- data.frame(time = time.no.change, log_return = 0)
+    log_r1 <- rbind(log_r1, new.df)
+    log_r1 <- log_r1[order(log_r1$time), ]}
+
+
+  log_r1 <- log_r1 %>% mutate(time_bucket = ceiling(time / 30))
+
+  # cluster_1_list[[i]] <-cluster_1_list[[i]]|> mutate(index = 1:nrow(cluster_1_list[[i]]))
+  stock100 <- cluster_1_train[[i]] %>% mutate(time_bucket = ceiling(time / 30),
+                            num_order = bid_size1 + ask_size1 + bid_size2 + ask_size2)
+
+
+  filtered_time_buckets <- stock100 |> pull(time_bucket)
+  filtered_time_buckets <- unique(filtered_time_buckets)
+  log_r1 <- log_r1 |> filter(time_bucket %in% filtered_time_buckets)
+  vol[[i]] <- aggregate(log_return ~ time_bucket, data = log_r1, FUN = comp_vol)
+  colnames(vol[[i]]) <- c('time_bucket', 'volatility')
+  len = length(unique(vol[[i]]$time_bucket))
+  
+  length_each_time_bucket = 5
+  if(len <7 ){length_each_time_bucket = 2}
+  if(len <= 2 ){pred.HAV.wls[[i]] =vol[[i]]$volatility[length(vol[[i]]$volatility)] 
+  next
+  }
+  
+  time_buckets_to_calculate <- len - length_each_time_bucket
+
+  mean.vol <- rep(0, time_buckets_to_calculate)
+  for (j in 1 : max(length_each_time_bucket,1)) {
+    mean.vol <- mean.vol + vol[[i]]$volatility[j : (j + (time_buckets_to_calculate-1) )] / length_each_time_bucket
+  }
+
+  list.HAV[[i]] <- data.frame(vol = vol[[i]]$volatility[-(1:length_each_time_bucket)],
+                              vol_1 = vol[[i]]$volatility[length_each_time_bucket:(len - 1)],
+                              mean_vol_5 = mean.vol)
+
+
+    quar[[i]] <- aggregate(log_return ~ time_bucket, data = log_r1, FUN = comp_quar)
+  colnames(quar[[i]]) <- c('time_bucket', 'quarticity')
+  HAV.ols.models[[i]] <- lm(vol ~ vol_1 + mean_vol_5, list.HAV[[i]])
+  
+any_row_with_all_zeros <- any(apply( list.HAV[[i]], 1, function(x) all(x == 0)))
+
+
+
+if (any_row_with_all_zeros){
+  
+  list.HAV.val[[i]] <- data.frame(
+                              vol_1 = vol[[i]]$volatility[len],
+                              mean_vol_5 = mean(vol[[i]]$volatility[(len-length_each_time_bucket+1):len]))
+  pred.HAV.wls[[i]] <- predict(HAV.ols.models[[i]], newdata = list.HAV.val[[i]])
+  
+  next
+  
+}
+
+if (len == 3 && (list.HAV[[i]]$vol_1 == 0 |   list.HAV[[i]]$mean_vol_5 == 0)){
+  
+  list.HAV.val[[i]] <- data.frame(
+                              vol_1 = vol[[i]]$volatility[len],
+                              mean_vol_5 = mean(vol[[i]]$volatility[(len-length_each_time_bucket+1):len]))
+  pred.HAV.wls[[i]] <- predict(HAV.ols.models[[i]], newdata = list.HAV.val[[i]])
+  
+  next
+  
+}
+
+
+  HAV.wls.models[[i]] <- lm(vol ~ vol_1 + mean_vol_5, list.HAV[[i]],
+                            weights = list.HAV[[i]]$vol_1 /
+                              sqrt(quar[[i]]$quarticity[length_each_time_bucket:(len - 1)]))
+
+   
+   
+  list.HAV.val[[i]] <- data.frame(
+                              vol_1 = vol[[i]]$volatility[len],
+                              mean_vol_5 = mean(vol[[i]]$volatility[(len-length_each_time_bucket+1):len]))
+  pred.HAV.wls[[i]] <- predict(HAV.wls.models[[i]], newdata = list.HAV.val[[i]])
+  if(pred.HAV.wls[[i]] <0 ){pred.HAV.wls[[i]] = vol[[i]]$volatility[nrow(vol[[i]])]}
+ 
+}
+return(pred.HAV.wls)
+}
+
+pred.hav.wls.1.0 = run_hav.wls.0(cluster_1_train)
+pred.hav.wls.2.0 = run_hav.wls.0(cluster_2_train)
+pred.hav.wls.3.0 = run_hav.wls.0(cluster_3_train)
+
+pred.hav.wls.1.abs = run_hav.wls.abs(cluster_1_train)
+pred.hav.wls.2.abs = run_hav.wls.abs(cluster_2_train)
+pred.hav.wls.3.abs = run_hav.wls.abs(cluster_3_train)
+
+pred.hav.wls.1.prev = run_hav.wls.prev(cluster_1_train)
+pred.hav.wls.2.prev = run_hav.wls.prev(cluster_2_train)
+pred.hav.wls.3.prev = run_hav.wls.prev(cluster_3_train)
+
+
+mean(calculate_mse(vol.1.actual,pred.hav.wls.1.0 ))
+mean(calculate_mse(vol.1.actual,pred.hav.wls.1))
+mean(calculate_mse(vol.1.actual,pred.hav.wls.1.abs ))
+mean(calculate_mse(vol.1.actual,pred.hav.wls.1.prev ))
+
+
+mean(calculate_mse(vol.2.actual,pred.hav.wls.2.0 ))
+mean(calculate_mse(vol.2.actual,pred.hav.wls.2))
+mean(calculate_mse(vol.2.actual,pred.hav.wls.2.abs ))
+mean(calculate_mse(vol.2.actual,pred.hav.wls.2.prev ))
+
+
+
+mean(calculate_mse(vol.3.actual,pred.hav.wls.3.0 ))
+mean(calculate_mse(vol.3.actual,pred.hav.wls.3))
+mean(calculate_mse(vol.3.actual,pred.hav.wls.3.abs ))
+mean(calculate_mse(vol.3.actual,pred.hav.wls.3.prev ))
+
+
+
+
+
+prediction_results_cluster1$pred.hav.wls.1.0 <- unlist(pred.hav.wls.1)
+evaluation_cluster1$pred.hav.wls.1.0 <- calculate_mse(vol.1.actual,pred.hav.wls.1.0)
+
+prediction_results_cluster2$pred.hav.wls.2.0 <- unlist(pred.hav.wls.2)
+evaluation_cluster2$pred.hav.wls.2.0 <- calculate_mse(vol.2.actual,pred.hav.wls.2.0)
+
+prediction_results_cluster3$pred.hav.wls.3.0 <- unlist(pred.hav.wls.3.0)
+evaluation_cluster3$pred.hav.wls.3.0 <- calculate_mse(vol.3.actual,pred.hav.wls.3.0)
+
+
+prediction_results_cluster1$pred.hav.wls.1.abs <- unlist(pred.hav.wls.1.abs)
+evaluation_cluster1$pred.hav.wls.1.abs <- calculate_mse(vol.1.actual,pred.hav.wls.1.abs)
+
+prediction_results_cluster2$pred.hav.wls.2.abs <- unlist(pred.hav.wls.2.abs)
+evaluation_cluster2$pred.hav.wls.2.abs <- calculate_mse(vol.2.actual,pred.hav.wls.2.abs)
+
+prediction_results_cluster3$pred.hav.wls.3.abs <- unlist(pred.hav.wls.3.abs)
+evaluation_cluster3$pred.hav.wls.3.abs <- calculate_mse(vol.3.actual,pred.hav.wls.3.abs)
+
+
+prediction_results_cluster1$pred.hav.wls.1.prev <- unlist(pred.hav.wls.1.prev)
+evaluation_cluster1$pred.hav.wls.1.prev <- calculate_mse(vol.1.actual,pred.hav.wls.1.prev)
+
+prediction_results_cluster2$pred.hav.wls.2.prev <- unlist(pred.hav.wls.2.prev)
+evaluation_cluster2$pred.hav.wls.2.prev <- calculate_mse(vol.2.actual,pred.hav.wls.2.prev)
+
+prediction_results_cluster3$pred.hav.wls.3.prev <- unlist(pred.hav.wls.3.prev)
+evaluation_cluster3$pred.hav.wls.3.prev <- calculate_mse(vol.3.actual,pred.hav.wls.3.prev)
+```
+
+In the case for HAV negative values, it looks like using the previous volatility seems to be performing the best amongst all clusters.
+## ARMA-GARCH
+
+```{r, warning=FALSE}
+set.seed(3888)
+library(rugarch)
+vol = list()
+list.reg <- list() 
+log_r1 <- list()
+lm.models <- list()
+list.reg.val <- list()
+pred.lm <- list()
+RV.pred <- list()
+
+ARMA_GARCH.models <- list()
+
+run_arma <- function(cluster_1_list,garch1, garch2, arma1, arma2 ) {
+for (i in 1:length(cluster_1_list)){
+  spec <- ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(1, 1)), 
+                   mean.model = list(armaOrder = c(1, 1)), 
+                   distribution.model = "norm")
+
+  # cluster_1_list[[i]] <-  cluster_1_list[[i]] |> mutate(index = 1:nrow(cluster_1_list[[i]]))
+  sec <- cluster_1_list[[i]] %>% pull(seconds_in_bucket) - cluster_1_list[[i]]$seconds_in_bucket[1] + 1 # this resets second to 1
+  cluster_1_list[[i]]$time <- sec
+  # index <- cluster_1_list[[i]] %>% pull(seconds_in_bucket) - sec[1] +1
+  price <- cluster_1_list[[i]]  %>% pull(WAP)
+  log_r <- log(price[-1] / price[1:(length(price) - 1)])
+  log_r1<- data.frame(time = sec[-1],  log_return = log_r)
+  start_time  = cluster_1_list[[i]]$time[1]
+  end_time = tail(cluster_1_list[[i]]$time, 1)
+  time.no.change <- (start_time:end_time)[!(start_time:end_time %in% log_r1$time)]
+  if (length(time.no.change) > 0) {
+    new.df <- data.frame(time = time.no.change, log_return = 0)
+    log_r1 <- rbind(log_r1, new.df)
+    log_r1 <- log_r1[order(log_r1$time), ]}
+  
+
+  log_r1 <- log_r1 %>% mutate(time_bucket = ceiling(time / 30))
+  
+  # cluster_1_list[[i]] <-cluster_1_list[[i]]|> mutate(index = 1:nrow(cluster_1_list[[i]]))
+  stock100 <- cluster_1_list[[i]] %>% mutate(time_bucket = ceiling(time / 30),
+                            num_order = bid_size1 + ask_size1 + bid_size2 + ask_size2)
+  
+  
+  filtered_time_buckets <- stock100 |> pull(time_bucket)
+  filtered_time_buckets <- unique(filtered_time_buckets)
+  log_r1 <- log_r1 |> filter(time_bucket %in% filtered_time_buckets)
+  vol[[i]] <- aggregate(log_return ~ time_bucket, data = log_r1, FUN = comp_vol)
+  colnames(vol[[i]]) <- c('time_bucket', 'volatility')
+  
+   ARMA_GARCH.models[[i]] <- ugarchfit(spec = spec, data = log_r1 %>% pull(log_return),
+                                      solver = 'hybrid')
+   
+     fspec <- getspec(ARMA_GARCH.models[[i]])
+  setfixed(fspec) <- as.list(coef(ARMA_GARCH.models[[i]]))
+  future.path <- fitted(ugarchpath(fspec, n.sim = 30, m.sim = 1000))
+  # Due to numerical issues, sometimes NA value can be produced 
+  # We simply replace NA value with 0; you may come up with a better idea in your own project
+  future.path[is.na(future.path)] <- 0 
+  RV.pred[i] <- mean(sqrt(colSums(future.path ^ 2)))
+  
+  
+}
+return(RV.pred)
+}
+run_arma_optimise_1_0 <- function(cluster_1_test) {
+    for (i in 1:length(cluster_1_test)){
+    print(i)
+  results <- list() 
+    
+    # cluster_1_test <-  cluster_1_test |> mutate(index = 1:nrow(cluster_1_test))
+    sec <- cluster_1_test[[i]] %>% pull(seconds_in_bucket) - cluster_1_test[[i]]$seconds_in_bucket[1] + 1 # this resets second to 1
+    cluster_1_test[[i]]$time <- sec
+    # index <- cluster_1_test[[i]] %>% pull(seconds_in_bucket) - sec[1] +1
+    price <- cluster_1_test[[i]]  %>% pull(WAP)
+    log_r <- log(price[-1] / price[1:(length(price) - 1)])
+    log_r1<- data.frame(time = sec[-1],  log_return = log_r)
+    start_time  = cluster_1_test[[i]]$time[1]
+    end_time = tail(cluster_1_test[[i]]$time, 1)
+    time.no.change <- (start_time:end_time)[!(start_time:end_time %in% log_r1$time)]
+    if (length(time.no.change) > 0) {
+      new.df <- data.frame(time = time.no.change, log_return = 0)
+      log_r1 <- rbind(log_r1, new.df)
+      log_r1 <- log_r1[order(log_r1$time), ]}
+    
+    
+    log_r1 <- log_r1 %>% mutate(time_bucket = ceiling(time / 30))
+    
+    # cluster_1_test[[i]] <-cluster_1_test[[i]]|> mutate(index = 1:nrow(cluster_1_test[[i]]))
+    stock100 <- cluster_1_test[[i]] %>% mutate(time_bucket = ceiling(time / 30),
+                                               num_order = bid_size1 + ask_size1 + bid_size2 + ask_size2)
+    
+    
+    filtered_time_buckets <- stock100 |> pull(time_bucket)
+    filtered_time_buckets <- unique(filtered_time_buckets)
+    log_r1 <- log_r1 |> filter(time_bucket %in% filtered_time_buckets)
+    vol <- aggregate(log_return ~ time_bucket, data = log_r1, FUN = comp_vol)
+    colnames(vol) <- c('time_bucket', 'volatility')
+    
+    
+max_p <- 1
+max_q <- 1
+max_g <- 1
+
+# Loop over AR orders
+for(p in 0:max_p){
+  # Loop over MA orders
+  for(q in 0:max_q){
+    # Loop over GARCH orders
+    for(g in 0:max_g){
+      # Specify model
+      spec <- ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(g, g)), 
+                         mean.model = list(armaOrder = c(p, q)), 
+                         distribution.model = "norm")
+
+      # Try to fit model
+      fit <- try(ugarchfit(spec, data = log_r1 %>% pull(log_return)), silent = TRUE)
+
+      # Check if model fitting was successful
+      if(!inherits(fit, "try-error")){
+        # Extract AIC
+        aic <- tryCatch({
+          infocriteria(fit)["Akaike",]
+        }, error = function(e) {
+          Inf
+        })
+
+        # Store results
+        results[[paste0("AR(", p, ")-MA(", q, ")-GARCH(", g, ",", g, ")")]] <- list(aic = aic, p = p, q = q, g = g)
+      }
+    }
+  }
+}
+
+# Find model with smallest AIC
+aic_values <- sapply(results, `[[`, "aic")
+best_model <- which.min(aic_values)
+best_orders <- unlist(results[[best_model]][c("p", "q", "g")])
+
+spec <- ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(best_orders[["g"]], best_orders[["g"]])), 
+                         mean.model = list(armaOrder = c(best_orders[["p"]], best_orders[["q"]])), 
+                         distribution.model = "norm")
+
+    ARMA_GARCH.models <- ugarchfit(spec = spec, data = log_r1 %>% pull(log_return),
+                                        solver = 'hybrid')
+    
+    fspec <- getspec(ARMA_GARCH.models)
+    setfixed(fspec) <- as.list(coef(ARMA_GARCH.models))
+    future.path <- fitted(ugarchpath(fspec, n.sim = 30, m.sim = 1000))
+    # Due to numerical issues, sometimes NA value can be produced 
+    # We simply replace NA value with 0; you may come up with a better idea in your own project
+    future.path[is.na(future.path)] <- 0 
+    RV.pred[i] <- mean(sqrt(colSums(future.path ^ 2)))
+    print(RV.pred[i])
+    }
+  return(RV.pred)
+}
+
+
+pred.arma.1.optimisation <- run_arma_optimise_1_0(cluster_1_train)
+pred.arma.2.optimisation <- run_arma_optimise_1_0(cluster_2_train)
+pred.arma.3.optimisation <- run_arma_optimise_1_0(cluster_3_train)
+
+pred.arma.1= run_arma(cluster_1_train)
+pred.arma.2= run_arma(cluster_2_train)
+pred.arma.3 = run_arma(cluster_3_train)
+
+
+mean(calculate_mse(vol.1.actual, pred.arma.1))
+mean(calculate_mse(vol.1.actual, pred.arma.1.optimisation))
+mean(calculate_mse(vol.2.actual,pred.arma.2))
+mean(calculate_mse(vol.2.actual, pred.arma.2.optimisation))
+mean(calculate_mse(vol.3.actual,pred.arma.3))
+mean(calculate_mse(vol.3.actual, pred.arma.3.optimisation))
+```
+### Try handling negative values of Linear Regression using ARMA GARCH
+```{r, warning=FALSE}
+run_regression_aic_optimise_weight_arma <- function(cluster_1_train) {
+  vol = list()
+list.reg <- list() 
+log_r1 <- list()
+lm.models.full <- list()
+list.reg.val <- list()
+pred.lm <- list()
+lm.models.upper <- list()
+lm.models.og <- list()
+lm.models.null<- list()
+lm.models.forward <- list()
+pred.lm.og <- list()
+pred.lm.forward <- list()
+for (i in 1:length(cluster_1_train)){
+  print(i)
+  sec <- cluster_1_train[[i]] %>% pull(seconds_in_bucket) - cluster_1_train[[i]]$seconds_in_bucket[1] + 1 # this resets second to 1
+  cluster_1_train[[i]]$time <- sec
+  # index <- cluster_1_list[[i]] %>% pull(seconds_in_bucket) - sec[1] +1
+  price <- cluster_1_train[[i]]  %>% pull(WAP)
+  log_r <- log(price[-1] / price[1:(length(price) - 1)])
+  log_r1<- data.frame(time = sec[-1],  log_return = log_r)
+  start_time  = cluster_1_train[[i]]$time[1]
+  end_time = tail(cluster_1_train[[i]]$time, 1)
+  time.no.change <- (start_time:end_time)[!(start_time:end_time %in% log_r1$time)]
+  if (length(time.no.change) > 0) {
+    new.df <- data.frame(time = time.no.change, log_return = 0)
+    log_r1 <- rbind(log_r1, new.df)
+    log_r1 <- log_r1[order(log_r1$time), ]}
+  log_r1 <- log_r1 %>% mutate(time_bucket = ceiling(time / 30))
+  stock100 <- cluster_1_train[[i]] %>% mutate(time_bucket = ceiling(time / 30),
+                            num_order = bid_size1 + ask_size1 + bid_size2 + ask_size2)
+  filtered_time_buckets <- stock100 |> pull(time_bucket)
+  filtered_time_buckets <- unique(filtered_time_buckets)
+  log_r1 <- log_r1 |> filter(time_bucket %in% filtered_time_buckets)
+  vol[[i]] <- aggregate(log_return ~ time_bucket, data = log_r1, FUN = comp_vol)
+  colnames(vol[[i]]) <- c('time_bucket', 'volatility')
+  
+  len.train <- length(unique(stock100$time_bucket))
+
+length_cluster <- nrow(stock100)
+stats.bucket <- stock100 %>% 
+    select(c(BidAskSpread1,BidAskSpread2, time_bucket,bid_price1,bid_price2,ask_price1,ask_price2,bid_size2,bid_size1,ask_size1,ask_size2,WAP,WAP2, num_order))
+
+if(len.train != length(vol[[i]]$volatility)){print("ERROR")}
+     mean.bid_price1 <- aggregate(bid_price1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_price2 <- aggregate(bid_price2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_price1 <- aggregate(ask_price1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_price2 <- aggregate(ask_price2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_size2 <- aggregate(bid_size2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.bid_size1 <- aggregate(bid_size1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_size1 <- aggregate(ask_size1 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_size2 <- aggregate(ask_size2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+     mean.ask_size2 <- aggregate(ask_size2 ~ time_bucket, data = stats.bucket, FUN = "mean")
+  
+  
+   if(nrow(mean.ask_size2) <= 2){
+     pred.lm.forward[[i]] = vol[[i]]$volatility[nrow(vol[[i]])]
+  next}
+    
+  list.reg[[i]] <- data.frame(volatility = vol[[i]]$volatility[-1], 
+                               bid_price1 = mean.bid_price1$bid_price1[1:(len.train - 1)],
+                               bid_price2 = mean.bid_price2$bid_price2[1:(len.train - 1)],
+                               ask_price1 = mean.ask_price1$ask_price1[1:(len.train - 1)],
+                               ask_price2 = mean.ask_price2$ask_price2[1:(len.train - 1)],
+                               bid_size2 = mean.bid_size2$bid_size2[1:(len.train - 1)],
+                               bid_size1 = mean.bid_size1$bid_size1[1:(len.train - 1)],
+                               ask_size1 = mean.ask_size1$ask_size1[1:(len.train - 1)],
+                              ask_size2 = mean.ask_size2$ask_size2[1:(len.train - 1)],
+                              realised_volatility = vol[[i]]$volatility[1:(len.train - 1)]
+                              )
+  
+ 
+ 
+
+  # Initialize a vector to store the R-squared values for each weight
+r_squared_values <- numeric(length = 10)
+
+# Loop through the weights from 0.1 to 1, incrementing by 0.1
+for (j in 1:10) {
+  weight <- j * 0.1
+  
+  # Fit the null and full models with the current weight
+  lm.models.null[[i]] <- lm(volatility ~ 1, list.reg[[i]],
+                       weights = weight ^ (((len.train - 2):0) / 2))
+  lm.models.full[[i]] <- lm(volatility ~ ., list.reg[[i]], weights = weight ^ (((len.train - 2):0) / 2))
+  
+  # Perform forward stepwise model selection using AIC
+  lm.models.forward[[i]] <- step(lm.models.null[[i]], direction = "forward", trace = FALSE, scope = list(lower = lm.models.null[[i]], upper = lm.models.full[[i]]))
+  
+  # Calculate the R-squared value for the current model
+  r_squared_values[j] <- summary(lm.models.forward[[i]])$adj.r.squared
+}
+
+# Find the index of the best R-squared value
+best_r_squared_index <- which.max(r_squared_values)
+
+
+# Set the best weight
+best_weight <- best_r_squared_index * 0.1
+
+
+if(length(best_weight) ==0){best_weight = 0.8}
+
+# Fit the null and full models with the best weight
+lm.models.null[[i]] <- lm(volatility ~ 1, list.reg[[i]], weights = best_weight ^ (((len.train - 2):0) / 2))
+lm.models.full[[i]] <- lm(volatility ~ ., list.reg[[i]], weights = best_weight ^ (((len.train - 2):0) / 2))
+
+# Perform forward stepwise model selection using AIC with the best weight
+lm.models.forward[[i]] <- step(lm.models.null[[i]], direction = "forward", trace = FALSE, scope = list(lower = lm.models.null[[i]], upper = lm.models.full[[i]]))
+
+
+  
+  list.reg.val[[i]] <- data.frame(
+                               bid_price1 = mean.bid_price1$bid_price1[len.train],
+                               bid_price2 = mean.bid_price2$bid_price2[len.train],
+                               ask_price1 = mean.ask_price1$ask_price1[len.train],
+                               ask_price2 = mean.ask_price2$ask_price2[len.train],
+                               bid_size2 = mean.bid_size2$bid_size2[len.train],
+                               bid_size1 = mean.bid_size1$bid_size1[len.train],
+                               ask_size1 = mean.ask_size1$ask_size1[len.train],
+                              ask_size2 = mean.ask_size2$ask_size2[len.train],
+                              realised_volatility = vol[[i]]$volatility[len.train])
+  
+  pred.lm.forward[[i]] <- predict(lm.models.forward[[i]], newdata = list.reg.val[[i]])
+  if(pred.lm.forward[[i]]<0){
+ results <- list() 
+    
+    
+max_p <- 1
+max_q <- 1
+max_g <- 1
+
+# Loop over AR orders
+for(p in 0:max_p){
+  # Loop over MA orders
+  for(q in 0:max_q){
+    # Loop over GARCH orders
+    for(g in 0:max_g){
+      # Specify model
+      spec <- ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(g, g)), 
+                         mean.model = list(armaOrder = c(p, q)), 
+                         distribution.model = "norm")
+
+      # Try to fit model
+      fit <- try(ugarchfit(spec, data = log_returns), silent = TRUE)
+
+      # Check if model fitting was successful
+      if(!inherits(fit, "try-error")){
+        # Extract AIC
+        aic <- tryCatch({
+          infocriteria(fit)["Akaike",]
+        }, error = function(e) {
+          Inf
+        })
+
+        # Store results
+        results[[paste0("AR(", p, ")-MA(", q, ")-GARCH(", g, ",", g, ")")]] <- list(aic = aic, p = p, q = q, g = g)
+      }
+    }
+  }
+}
+
+# Find model with smallest AIC
+aic_values <- sapply(results, `[[`, "aic")
+best_model <- which.min(aic_values)
+best_orders <- unlist(results[[best_model]][c("p", "q", "g")])
+
+spec <- ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(best_orders[["g"]], best_orders[["g"]])), 
+                         mean.model = list(armaOrder = c(best_orders[["p"]], best_orders[["q"]])), 
+                         distribution.model = "norm")
+
+    ARMA_GARCH.models <- ugarchfit(spec = spec, data = log_r1 %>% pull(log_return),
+                                        solver = 'hybrid')
+    
+    fspec <- getspec(ARMA_GARCH.models)
+    setfixed(fspec) <- as.list(coef(ARMA_GARCH.models))
+    future.path <- fitted(ugarchpath(fspec, n.sim = 30, m.sim = 1000))
+    # Due to numerical issues, sometimes NA value can be produced 
+    # We simply replace NA value with 0; you may come up with a better idea in your own project
+    future.path[is.na(future.path)] <- 0 
+  pred.lm.forward[[i]] <- mean(sqrt(colSums(future.path ^ 2)))
+  
+  
+}
+
+    
+    
+    
+  }
+  
+
+  return(pred.lm.forward)
+}
+
+lm.arma_optimise.1 <- run_regression_aic_optimise_weight_arma(cluster_1_test)
+lm.arma_optimise.2 <- run_regression_aic_optimise_weight_arma(cluster_2_test)
+lm.arma_optimise.3 <- run_regression_aic_optimise_weight_arma(cluster_3_test)
+
+
+mean(calculate_mse(vol.1.actual.test, pred.arma.1.test))
+mean(calculate_mse(vol.1.actual.test, pred.arma.1.test.optimised))
+mean(calculate_mse(vol.1.actual.test, pred.hav.1.test))
+mean(calculate_mse(vol.1.actual.test, pred.lm.1.test))
+mean(calculate_mse(vol.1.actual.test, pred.lm.1.test.aic))
+mean(calculate_mse(vol.1.actual.test, lm.arma_optimise))
+
+
+```
+
+# Use Test set to compare performances
+## Dataframe to store results
+
+```{r}
+prediction_results_cluster1_test <- data.frame(rep(NA, length(cluster_1_test)))
+prediction_results_cluster2_test <- data.frame(rep(NA, length(cluster_2_test)))
+prediction_results_cluster3_test <- data.frame(rep(NA, length(cluster_3_test)))
+
+
+evaluation_cluster1_test <- data.frame(rep(NA, length(cluster_1_test)))
+evaluation_cluster2_test <- data.frame(rep(NA, length(cluster_2_test)))
+evaluation_cluster3_test <- data.frame(rep(NA, length(cluster_3_test)))
+```
+
+
+```{r, warning=FALSE, cache=TRUE}
+vol.1.actual.test <- list()
+
+for(i in 1:length(cluster_1_test)){
+  vol.1.actual.test[[i]] <- mean(cluster_1_test[[i]]$vol)
+}
+
+
+vol.2.actual.test <- list()
+
+for(i in 1:length(cluster_2_test)){
+  vol.2.actual.test[[i]] <- mean(cluster_2_test[[i]]$vol)
+}
+
+
+vol.3.actual.test <- list()
+
+for(i in 1:length(cluster_3_test)){
+  vol.3.actual.test[[i]] <- mean(cluster_3_test[[i]]$vol)
+}
+
+
+pred.arma.1.test= run_arma(cluster_1_test)
+pred.arma.2.test = run_arma(cluster_2_test)
+pred.arma.3.test = run_arma(cluster_3_test)
+
+pred.arma.1.test.optimised= run_arma_optimise_1_0(cluster_1_test)
+pred.arma.2.test.optimised = run_arma_optimise_1_0(cluster_2_test)
+pred.arma.3.test.optimised = run_arma_optimise_1_0(cluster_3_test)
+
+pred.hav.1.test= run_hav.wls.prev(cluster_1_test)
+pred.hav.2.test= run_hav.wls.prev(cluster_2_test)
+pred.hav.3.test= run_hav.wls.prev(cluster_3_test)
+
+pred.lm.1.test = run_regression_aic_optimise_weight(cluster_1_test)
+pred.lm.2.test = run_regression_aic_optimise_weight(cluster_2_test)
+pred.lm.3.test = run_regression_aic_optimise_weight(cluster_3_test)
+
+mean(calculate_mse(vol.1.actual.test, pred.arma.1.test))
+# mean(calculate_mse(vol.1.actual.test, pred.arma.1.test.optimised))
+mean(calculate_mse(vol.1.actual.test, pred.hav.1.test))
+mean(calculate_mse(vol.1.actual.test, pred.lm.1.test))
+
+mean(calculate_mse(vol.2.actual.test,pred.arma.2.test))
+mean(calculate_mse(vol.2.actual.test,pred.hav.2.test))
+mean(calculate_mse(vol.2.actual.test,pred.lm.2.test))
+# mean(calculate_mse(vol.2.actual.test,pred.lm.2.test.aic))
+# mean(calculate_mse(vol.2.actual.test,pred.arma.2.test.optimised))
+
+
+calculate_qlike(vol.2.actual.test,pred.arma.2.test)
+calculate_qlike(vol.2.actual.test,pred.hav.2.test)
+calculate_qlike(vol.2.actual.test,pred.lm.2.test)
+calculate_qlike(vol.2.actual.test,pred.lm.2.test.aic)
+calculate_qlike(vol.2.actual.test,pred.arma.2.test.optimised)
+
+
+result1 <- calculate_qlike(vol.1.actual.test, pred.arma.1.test)
+result2 <- calculate_qlike(vol.1.actual.test, pred.hav.1.test)
+result3 <- calculate_qlike(vol.1.actual.test, pred.lm.1.test)
+result4 <- calculate_qlike(vol.1.actual.test, pred.lm.1.test.aic)
+result5 <- calculate_qlike(vol.1.actual.test, pred.arma.1.test.optimised)
+
+
+data <- data.frame(
+  Method = c(rep("ARMA", length(result1)),
+             rep("HAV", length(result2)),
+             rep("LM", length(result3)),
+             rep("LM AIC", length(result4)),
+             rep("ARMA Optimised", length(result5))),
+  Qlike = c(result1, result2, result3, result4, result5)
+)
+
+
+
+boxplot(Qlike ~ Method, data = data, main = "Comparison of Qlike Results",
+        xlab = "Method", ylab = "Qlike", outline = FALSE)
+
+
+
+mean(calculate_mse(vol.3.actual.test,pred.arma.3.test))
+mean(calculate_mse(vol.3.actual.test,pred.hav.3.test))
+mean(calculate_mse(vol.3.actual.test, pred.lm.3.test))
+mean(calculate_mse(vol.3.actual.test,pred.lm.3.test.aic))
+
+```
+
+
+```{r,cache=TRUE}
+# Create the data frame for cluster 1
+# Create the data frame for cluster 1
+df_cluster_1 <- data.frame(
+  LM = unlist(pred.lm.1.test),
+  HAV = unlist(pred.hav.1.test),
+  ARMA = unlist(pred.arma.1.test)
+  # ,
+  # ARMA_Optimised = unlist(pred.arma.1.test.optimised),
+  # LM_ARMA = unlist(lm.arma_optimise.1)
+)
+
+# Create the data frame for cluster 2
+df_cluster_2 <- data.frame(
+  LM = unlist(pred.lm.2.test),
+  HAV = unlist(pred.hav.2.test),
+  ARMA = unlist(pred.arma.2.test)
+  # ,
+  # ARMA_Optimised = unlist(pred.arma.2.test.optimised),
+  #  LM_ARMA = unlist(lm.arma_optimise.2)
+)
+
+# Create the data frame for cluster 3
+df_cluster_3 <- data.frame(
+  LM = unlist(pred.lm.3.test),
+  HAV = unlist(pred.hav.3.test),
+  ARMA = unlist(pred.arma.3.test)
+  # ,
+  # ARMA_Optimised = unlist(pred.arma.3.test.optimised),
+  #  LM_ARMA = unlist(lm.arma_optimise.3)
+)
+```
+
+```{r}
+df_cluster_1_eval <- data.frame(
+  Model = rep(c("LM", "HAV", "ARMA"), each = length(pred.lm.1.test)),
+  MSE = c(
+    calculate_mse(vol.1.actual.test, pred.lm.1.test),
+    calculate_mse(vol.1.actual.test, pred.hav.1.test),
+    calculate_mse(vol.1.actual.test, pred.arma.1.test)
+  )
+)
+
+# Create the data frame for cluster 2 evaluation
+df_cluster_2_eval <- data.frame(
+  Model = rep(c("LM", "HAV", "ARMA"), each = length(pred.lm.2.test)),
+  MSE = c(
+    calculate_mse(vol.2.actual.test, pred.lm.2.test),
+    calculate_mse(vol.2.actual.test, pred.hav.2.test),
+    calculate_mse(vol.2.actual.test, pred.arma.2.test)
+  )
+)
+
+# Create the data frame for cluster 3 evaluation
+df_cluster_3_eval <- data.frame(
+  Model = rep(c("LM", "HAV", "ARMA"), each = length(pred.lm.3.test)),
+  MSE = c(
+    calculate_mse(vol.3.actual.test, pred.lm.3.test),
+    calculate_mse(vol.3.actual.test, pred.hav.3.test),
+    calculate_mse(vol.3.actual.test, pred.arma.3.test)
+  )
+)
+
+
+save(df_cluster_1_eval, file = 'df_cluster_1_eval.RData')
+save(df_cluster_2_eval, file = 'df_cluster_2_eval.RData')
+save(df_cluster_3_eval, file = 'df_cluster_3_eval.RData')
+
+plot_cluster_1_mse <- ggplot(df_cluster_1_eval, aes(x = Model, y = MSE)) +
+  geom_boxplot() + theme_minimal()+
+  labs(title = "Cluster 1 - MSE", x = "Model", y = "MSE") +
+  ylim(c(0,0.0000001))
+
+
+plot_cluster_2_mse <- ggplot(df_cluster_2_eval, aes(x = Model, y = MSE)) +
+  geom_boxplot() +
+  labs(title = "Cluster 2 - MSE", x = "Model", y = "MSE") +
+ ylim(c(0,0.0000001)) + theme_minimal()
+
+
+plot_cluster_3_mse <- ggplot(df_cluster_3_eval, aes(x = Model, y = MSE)) +
+  geom_boxplot() +
+  labs(title = "Cluster 3 - MSE", x = "Model", y = "MSE") +
+ ylim(c(0,0.0000000001))+ theme_minimal()
+
+
+```
+
+
+```{r}
+
+# Create the data frame for cluster 1 evaluation
+df_cluster_1_eval <- data.frame(
+  Model = rep(c("LM", "HAV", "ARMA", "ARMA_Optimised", "LM_ARMA"), each = length(pred.lm.1.test)),
+  MSE = c(
+    calculate_mse(vol.1.actual.test, pred.lm.1.test),
+    calculate_mse(vol.1.actual.test, pred.hav.1.test),
+    calculate_mse(vol.1.actual.test, pred.arma.1.test),
+    calculate_mse(vol.1.actual.test, pred.arma.1.test.optimised),
+     calculate_mse(vol.1.actual.test, lm.arma_optimise.1)
+  )
+)
+
+# Create the data frame for cluster 2 evaluation
+df_cluster_2_eval <- data.frame(
+  Model = rep(c("LM", "HAV", "ARMA", "ARMA_Optimised", "LM_ARMA"), each = length(pred.lm.2.test)),
+  MSE = c(
+    calculate_mse(vol.2.actual.test, pred.lm.2.test),
+    calculate_mse(vol.2.actual.test, pred.hav.2.test),
+    calculate_mse(vol.2.actual.test, pred.arma.2.test),
+    calculate_mse(vol.2.actual.test, pred.arma.2.test.optimised),
+    calculate_mse(vol.2.actual.test, lm.arma_optimise.2)
+  )
+)
+
+# Create the data frame for cluster 3 evaluation
+df_cluster_3_eval <- data.frame(
+  Model = rep(c("LM", "HAV", "ARMA", "ARMA_Optimised", "LM_ARMA"), each = length(pred.lm.3.test)),
+  MSE = c(
+    calculate_mse(vol.3.actual.test, pred.lm.3.test),
+    calculate_mse(vol.3.actual.test, pred.hav.3.test),
+    calculate_mse(vol.3.actual.test, pred.arma.3.test),
+    calculate_mse(vol.3.actual.test, pred.arma.3.test.optimised),
+    calculate_mse(vol.3.actual.test, lm.arma_optimise.3)
+  )
+)
+
+# Create the data frame for cluster 1 qlike
+df_cluster_1_qlike <- data.frame(
+  Model = rep(c("LM", "HAV", "ARMA", "ARMA_Optimised", "LM_ARMA"), each = length(pred.lm.1.test)),
+  Qlike = c(
+    calculate_qlike(vol.1.actual.test, pred.lm.1.test),
+    calculate_qlike(vol.1.actual.test, pred.hav.1.test),
+    calculate_qlike(vol.1.actual.test, pred.arma.1.test),
+    calculate_qlike(vol.1.actual.test, pred.arma.1.test.optimised),
+     calculate_qlike(vol.1.actual.test, lm.arma_optimise.1)
+    
+  )
+)
+
+# Create the data frame for cluster 2 qlike
+df_cluster_2_qlike <- data.frame(
+  Model = rep(c("LM", "HAV", "ARMA", "ARMA_Optimised", "LM_ARMA"), each = length(pred.lm.2.test)),
+  Qlike = c(
+    calculate_qlike(vol.2.actual.test, pred.lm.2.test),
+    calculate_qlike(vol.2.actual.test, pred.hav.2.test),
+    calculate_qlike(vol.2.actual.test, pred.arma.2.test),
+    calculate_qlike(vol.2.actual.test, pred.arma.2.test.optimised),
+    calculate_qlike(vol.2.actual.test, lm.arma_optimise.2)
+  )
+)
+
+# Create the data frame for cluster 3 qlike
+df_cluster_3_qlike <- data.frame(
+  Model = rep(c("LM", "HAV", "ARMA", "ARMA_Optimised", "LM_ARMA"), each = length(pred.lm.3.test)),
+  Qlike = c(
+    calculate_qlike(vol.3.actual.test, pred.lm.3.test),
+    calculate_qlike(vol.3.actual.test, pred.hav.3.test),
+    calculate_qlike(vol.3.actual.test, pred.arma.3.test),
+    calculate_qlike(vol.3.actual.test, pred.arma.3.test.optimised),
+    calculate_qlike(vol.3.actual.test, lm.arma_optimise.3)
+  )
+)
+
+
+
+```
+
+
+```{r}
+library(ggplot2)
+
+
+plot_cluster_1_mse <- ggplot(df_cluster_1_eval, aes(x = Model, y = MSE)) +
+  geom_boxplot() +
+  labs(title = "Cluster 1 - MSE", x = "Model", y = "MSE") +
+  ylim(0, 0.000001)
+
+
+plot_cluster_1_qlike <- ggplot(df_cluster_1_qlike, aes(x = Model, y = Qlike)) +
+  geom_boxplot() +
+  labs(title = "Cluster 1 - Qlike", x = "Model", y = "Qlike") +
+  ylim(0, 3)
+
+plot_cluster_2_mse <- ggplot(df_cluster_2_eval, aes(x = Model, y = MSE)) +
+  geom_boxplot() +
+  labs(title = "Cluster 2 - MSE", x = "Model", y = "MSE") +
+  ylim(0, 0.0000001)
+
+plot_cluster_2_qlike <- ggplot(df_cluster_2_qlike, aes(x = Model, y = Qlike)) +
+  geom_boxplot() +
+  labs(title = "Cluster 2 - Qlike", x = "Model", y = "Qlike") +
+ ylim(0, 0.1)
+
+plot_cluster_3_mse <- ggplot(df_cluster_3_eval, aes(x = Model, y = MSE)) +
+  geom_boxplot() +
+  labs(title = "Cluster 3 - MSE", x = "Model", y = "MSE") +
+ylim(0, 0.0000001)
+
+plot_cluster_3_qlike <- ggplot(df_cluster_3_qlike, aes(x = Model, y = Qlike)) +
+  geom_boxplot(outlier.shape = NA) +
+  labs(title = "Cluster 3 - Qlike", x = "Model", y = "Qlike") +
+  ylim(0, 0.1)
+
+# Print the plots
+print(plot_cluster_1_mse)
+print(plot_cluster_1_qlike)
+print(plot_cluster_2_mse)
+print(plot_cluster_2_qlike)
+print(plot_cluster_3_mse)
+print(plot_cluster_3_qlike)
+
+
+
+# Calculate the mean MSE for each model in df_cluster_1_eval
+mean_mse_cluster_1 <- aggregate(MSE ~ Model, data = df_cluster_1_eval, FUN = mean)
+# Calculate the mean MSE for each model in df_cluster_1_eval
+mean_mse_cluster_2 <- aggregate(MSE ~ Model, data = df_cluster_2_eval, FUN = mean)
+# Calculate the mean MSE for each model in df_cluster_1_eval
+mean_mse_cluster_3 <- aggregate(MSE ~ Model, data = df_cluster_3_eval, FUN = mean)
+# Calculate the mean MSE for each model in df_cluster_1_eval
+# Calculate the mean Qlike for each model in df_cluster_1_qlike, ignoring NA values
+# Calculate the mean Qlike for each model in df_cluster_1_qlike, ignoring NA and infinity values
+mean_qlike_cluster_1 <- aggregate(Qlike ~ Model, data = df_cluster_1_qlike, FUN = function(x) mean(x[is.finite(x)]))
+
+# Calculate the mean Qlike for each model in df_cluster_2_qlike, ignoring NA and infinity values
+mean_qlike_cluster_2 <- aggregate(Qlike ~ Model, data = df_cluster_2_qlike, FUN = function(x) mean(x[is.finite(x)]))
+
+# Calculate the mean Qlike for each model in df_cluster_3_qlike, ignoring NA and infinity values
+mean_qlike_cluster_3 <- aggregate(Qlike ~ Model, data = df_cluster_3_qlike, FUN = function(x) mean(x[is.finite(x)]))
+
+
+
+
+```
+
+
+
+
+
